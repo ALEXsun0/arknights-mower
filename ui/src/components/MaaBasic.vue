@@ -20,11 +20,39 @@ async function select_maa_dir() {
 }
 
 const maa_msg = ref('')
+const maa_testing = ref(false)
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 async function test_maa() {
+  if (maa_testing.value) return
+  maa_testing.value = true
   maa_msg.value = '正在测试……'
-  const response = await axios.get(`${import.meta.env.VITE_HTTP_URL}/check-maa`)
-  maa_msg.value = response.data
+  try {
+    let response = await axios.get(`${import.meta.env.VITE_HTTP_URL}/check-maa`)
+    let data = response.data
+    if (typeof data === 'string') {
+      maa_msg.value = data
+      return
+    }
+    while (data.status === 'running') {
+      maa_msg.value = data.message || '正在测试……'
+      await sleep(1000)
+      response = await axios.get(`${import.meta.env.VITE_HTTP_URL}/check-maa/status`)
+      data = response.data
+      if (typeof data === 'string') {
+        maa_msg.value = data
+        return
+      }
+    }
+    maa_msg.value = data.message || '测试失败，请检查Maa日志！'
+  } catch (error) {
+    maa_msg.value = `测试失败：${error.message}`
+  } finally {
+    maa_testing.value = false
+  }
 }
 
 const maa_conn_presets = ref([])
@@ -64,7 +92,9 @@ const maa_touch_options = ['maatouch', 'minitouch', 'adb'].map((x) => {
     </n-form>
     <n-divider />
     <div class="misc-container">
-      <n-button @click="test_maa">测试设置</n-button>
+      <n-button :loading="maa_testing" :disabled="maa_testing" @click="test_maa">
+        测试设置
+      </n-button>
       <div>{{ maa_msg }}</div>
     </div>
   </n-card>

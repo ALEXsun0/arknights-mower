@@ -36,7 +36,12 @@ export const useConfigStore = defineStore('config', () => {
   const shop_list = ref([])
   const item_list = ref([])
   const maa_gap = ref(false)
-  const simulator = ref({ name: '', index: -1 })
+  const simulator = ref({
+    name: '',
+    index: -1,
+    mac_desktop: 0,
+    mac_keep_rendering: false
+  })
   const resting_threshold = ref(50)
   const fia_threshold = ref(90)
   const rescue_threshold = ref(75)

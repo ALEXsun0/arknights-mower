@@ -1,6 +1,7 @@
 import json
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from enum import Enum
 from os import system
@@ -32,8 +33,21 @@ class SimulatorCommandSet:
     blocking: bool = False
 
 
-MUMUPRO_MAC_MANAGER_PORT = 20000
+MUMUPRO_MAC_MANAGER_PORT_RANGE = range(20000, 20021)
 MUMUPRO_MAC_BUNDLE_ID = "com.netease.mumu.nemux"
+MUMUPRO_KEEP_RENDERING_INTERVAL = 120
+MAC_DESKTOP_KEY_CODES = {
+    1: 18,
+    2: 19,
+    3: 20,
+    4: 21,
+    5: 23,
+    6: 22,
+    7: 26,
+    8: 28,
+    9: 25,
+}
+_last_mumupro_render_keepalive = 0.0
 
 
 def restart_simulator(stop: bool = True, start: bool = True) -> bool:
@@ -174,8 +188,11 @@ def restart_mumupro_mac(data, stop: bool, start: bool, allow_retry: bool) -> boo
 
     csleep(3)
     logger.info("启动MuMuPro模拟器")
+    desktop = normalize_index(getattr(data, "mac_desktop", 0))
+    switch_macos_desktop(desktop)
     ensure_mumupro_mac_manager(data.simulator_folder)
-    start_mumupro_mac(idx)
+    switch_macos_desktop(desktop)
+    start_mumupro_mac(idx, desktop)
     started = wait_for_target_adb(data.wait_time)
     if not started and allow_retry:
         logger.warning("MuMuPro重启后ADB未恢复，重试一次")
@@ -184,6 +201,7 @@ def restart_mumupro_mac(data, stop: bool, start: bool, allow_retry: bool) -> boo
         return False
 
     press_hotkey(data.hotkey)
+    keep_mumupro_rendering(force=True)
     return True
 
 
@@ -195,16 +213,26 @@ def stop_mumupro_mac(index: int) -> bool:
     return kill_mumupro_mac_process(index)
 
 
-def start_mumupro_mac(index: int) -> bool:
-    # restart 在 MuMuPro 1.4.x 中可用于让管理进程按实例编号拉起播放器。
+def start_mumupro_mac(index: int, desktop: int = 0) -> bool:
+    if find_mumupro_mac_pids(index):
+        return True
+
+    # 部分版本会返回成功但不真正拉起播放器；后面用进程检测校验。
     ok = post_mumupro_mac_api("restart", index)
     if not ok:
         ok = post_mumupro_mac_api("show_main", index)
-    return ok
+    if ok and wait_for_mumupro_mac_process(index, 5):
+        return True
+
+    logger.info("通过MuMuPro管理器窗口启动模拟器")
+    clicked = click_mumupro_mac_start_button(index)
+    if clicked:
+        switch_macos_desktop(desktop)
+    return clicked and wait_for_mumupro_mac_process(index, 30)
 
 
 def ensure_mumupro_mac_manager(folder_path: str) -> None:
-    if is_port_open("127.0.0.1", MUMUPRO_MAC_MANAGER_PORT):
+    if find_mumupro_mac_manager_port() is not None:
         return
 
     app_path = (
@@ -225,14 +253,34 @@ def ensure_mumupro_mac_manager(folder_path: str) -> None:
             stderr=subprocess.DEVNULL,
         )
 
-    for _ in range(30):
-        if is_port_open("127.0.0.1", MUMUPRO_MAC_MANAGER_PORT):
+    for _ in range(60):
+        if find_mumupro_mac_manager_port() is not None:
             return
         csleep(1)
+    logger.warning("未检测到MuMuPro管理端口")
 
 
 def post_mumupro_mac_api(endpoint: str, index: int) -> bool:
-    url = f"http://127.0.0.1:{MUMUPRO_MAC_MANAGER_PORT}/api/player/{endpoint}"
+    port = find_mumupro_mac_manager_port()
+    if port is None:
+        logger.debug("MuMuPro manager port not found")
+        return False
+    return post_mumupro_mac_api_to_port(endpoint, index, port)
+
+
+def find_mumupro_mac_manager_port() -> int | None:
+    for port in MUMUPRO_MAC_MANAGER_PORT_RANGE:
+        if not is_port_open("127.0.0.1", port):
+            continue
+        if post_mumupro_mac_api_to_port("authentication", 0, port, log_failure=False):
+            return port
+    return None
+
+
+def post_mumupro_mac_api_to_port(
+    endpoint: str, index: int, port: int, log_failure: bool = True
+) -> bool:
+    url = f"http://127.0.0.1:{port}/api/player/{endpoint}"
     data = json.dumps({"index": index}).encode("utf-8")
     request = Request(
         url,
@@ -241,14 +289,16 @@ def post_mumupro_mac_api(endpoint: str, index: int) -> bool:
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urlopen(request, timeout=3) as response:
+        with urlopen(request, timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, URLError, json.JSONDecodeError) as e:
-        logger.debug(f"MuMuPro API {endpoint} failed: {e}")
+        if log_failure:
+            logger.debug(f"MuMuPro API {endpoint} failed on port {port}: {e}")
         return False
     if payload.get("code") == 0:
         return True
-    logger.debug(f"MuMuPro API {endpoint} response: {payload}")
+    if log_failure:
+        logger.debug(f"MuMuPro API {endpoint} response on port {port}: {payload}")
     return False
 
 
@@ -268,6 +318,141 @@ def wait_for_mumupro_mac_process_exit(index: int, wait_time: int) -> bool:
             return True
         csleep(1)
     return not find_mumupro_mac_pids(index)
+
+
+def wait_for_mumupro_mac_process(index: int, wait_time: int) -> bool:
+    for _ in range(wait_time):
+        if find_mumupro_mac_pids(index):
+            return True
+        csleep(1)
+    return bool(find_mumupro_mac_pids(index))
+
+
+def click_mumupro_mac_start_button(index: int) -> bool:
+    row_number = index + 1
+    background_script = f"""
+tell application "System Events"
+  tell process "MuMuPlayer"
+    tell window 1
+      tell scroll area 1
+        tell table 1
+          tell row {row_number}
+            tell UI element 1
+              tell button 2
+                perform action "AXPress"
+              end tell
+            end tell
+          end tell
+        end tell
+      end tell
+    end tell
+  end tell
+end tell
+"""
+    if run_osascript(background_script, timeout=5):
+        return True
+
+    script = f"""
+tell application "System Events"
+  tell process "MuMuPlayer"
+    set frontmost to true
+    delay 0.3
+    tell window 1
+      tell scroll area 1
+        tell table 1
+          tell row {row_number}
+            tell UI element 1
+              click button 2
+            end tell
+          end tell
+        end tell
+      end tell
+    end tell
+  end tell
+end tell
+"""
+    return run_osascript(script, timeout=10)
+
+
+def switch_macos_desktop(desktop) -> bool:
+    desktop = normalize_index(desktop)
+    if __system__ != "darwin" or desktop <= 0:
+        return False
+    key_code = MAC_DESKTOP_KEY_CODES.get(desktop)
+    if key_code is None:
+        logger.warning("macOS桌面编号仅支持1-9")
+        return False
+    logger.info(f"切换到macOS桌面{desktop}")
+    script = f"""
+tell application "System Events"
+  key code {key_code} using {{control down}}
+end tell
+"""
+    ok = run_osascript(script, timeout=5)
+    if ok:
+        csleep(0.5)
+    return ok
+
+
+def keep_mumupro_rendering(force: bool = False) -> None:
+    global _last_mumupro_render_keepalive
+    if __system__ != "darwin":
+        return
+    data = config.conf.simulator
+    if (
+        data.name != Simulator_Type.MuMuPro.value
+        or not getattr(data, "mac_keep_rendering", False)
+    ):
+        return
+
+    now = time.monotonic()
+    if not force and now - _last_mumupro_render_keepalive < MUMUPRO_KEEP_RENDERING_INTERVAL:
+        return
+    _last_mumupro_render_keepalive = now
+
+    idx = normalize_index(data.index)
+    if idx < 0:
+        return
+    if ensure_mumupro_mac_window_visible(idx):
+        logger.debug("已保持MuMuPro窗口可见")
+
+
+def ensure_mumupro_mac_window_visible(index: int) -> bool:
+    for pid in find_mumupro_mac_pids(index):
+        script = f"""
+tell application "System Events"
+  set targetProcess to first process whose unix id is {pid}
+  tell targetProcess
+    try
+      repeat with targetWindow in windows
+        set value of attribute "AXMinimized" of targetWindow to false
+      end repeat
+    end try
+    set frontmost to true
+  end tell
+end tell
+"""
+        if run_osascript(script, timeout=5):
+            return True
+    return False
+
+
+def run_osascript(script: str, timeout: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["osascript", "-"],
+            input=script,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except Exception as e:
+        logger.debug(e)
+        return False
+    if result.returncode == 0:
+        return True
+    logger.debug(result.stderr.strip() or result.stdout.strip())
+    return False
 
 
 def find_mumupro_mac_pids(index: int) -> list[str]:

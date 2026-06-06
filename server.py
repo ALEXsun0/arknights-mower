@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import pathlib
+import subprocess
 import sys
 import time
 from functools import wraps
@@ -52,6 +53,98 @@ if token := config.conf.webview.token:
 mower_thread = None
 log_lines = []
 ws_connections = []
+maa_check_job = {
+    "id": None,
+    "process": None,
+    "status": "idle",
+    "message": "",
+}
+
+
+MAA_CHECK_SCRIPT = r"""
+import json
+import pathlib
+import sys
+
+params = json.loads(sys.argv[1])
+try:
+    maa_path = pathlib.Path(params["maa_path"])
+    sys.path.append(str(maa_path / "Python"))
+
+    from asst.asst import Asst
+
+    fastest_screencap = {}
+
+    def callback(msg, details, arg):
+        try:
+            payload = json.loads(details.decode("utf-8"))
+            if payload.get("what") == "FastestWayToScreencap":
+                fastest_screencap.update(payload.get("details") or {})
+        except Exception:
+            pass
+
+    callback_func = Asst.CallBackType(callback)
+    Asst.load(str(maa_path))
+    asst = Asst(callback=callback_func)
+    version = asst.get_version()
+    asst.set_instance_option(2, params["maa_touch_option"])
+    if asst.connect(params["maa_adb_path"], params["adb"], params["maa_conn_preset"]):
+        fastest_method = fastest_screencap.get("method")
+        fastest_cost = fastest_screencap.get("cost")
+        if fastest_method and fastest_cost is not None:
+            message = (
+                f"Maa {version} 加载成功，最快截图 {fastest_method} "
+                f"{fastest_cost}ms"
+            )
+        else:
+            message = f"Maa {version} 加载成功"
+        result = {"status": "success", "message": message}
+    else:
+        result = {"status": "failed", "message": "连接失败，请检查Maa日志！"}
+except Exception as e:
+    result = {"status": "failed", "message": "Maa加载失败：" + str(e)}
+
+print(json.dumps(result, ensure_ascii=False))
+"""
+
+
+def _collect_maa_check_result():
+    process = maa_check_job.get("process")
+    if process is None:
+        return
+
+    if process.poll() is None:
+        return
+
+    stdout, stderr = process.communicate()
+    result = None
+    for line in reversed(stdout.splitlines()):
+        try:
+            result = json.loads(line)
+            break
+        except json.JSONDecodeError:
+            pass
+
+    if result is None:
+        message = f"Maa测试进程异常退出：{process.returncode}"
+        if stderr.strip():
+            message += f"，{stderr.strip().splitlines()[-1]}"
+        maa_check_job.update(
+            {
+                "process": None,
+                "status": "failed",
+                "message": message,
+            }
+        )
+        return
+
+    maa_check_job.update(
+        {
+            "process": None,
+            "status": result.get("status", "failed"),
+            "message": result.get("message", ""),
+        }
+    )
 
 
 def read_log():
@@ -434,28 +527,52 @@ def validate_backup_plans_route():
 @app.route("/check-maa")
 @require_token
 def get_maa_adb_version():
-    try:
-        asst_path = os.path.dirname(
-            pathlib.Path(config.conf.maa_path) / "Python" / "asst"
-        )
-        if asst_path not in sys.path:
-            sys.path.append(asst_path)
-        from asst.asst import Asst
+    _collect_maa_check_result()
+    if maa_check_job["status"] == "running":
+        return {
+            "status": "running",
+            "message": maa_check_job["message"] or "正在测试……",
+        }
 
-        Asst.load(config.conf.maa_path)
-        asst = Asst()
-        version = asst.get_version()
-        asst.set_instance_option(2, config.conf.maa_touch_option)
-        if asst.connect(
-            config.conf.maa_adb_path, config.conf.adb, config.conf.maa_conn_preset
-        ):
-            maa_msg = f"Maa {version} 加载成功"
-        else:
-            maa_msg = "连接失败，请检查Maa日志！"
-    except Exception as e:
-        maa_msg = "Maa加载失败：" + str(e)
-        logger.exception(maa_msg)
-    return maa_msg
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            MAA_CHECK_SCRIPT,
+            json.dumps(
+                {
+                    "maa_path": str(config.conf.maa_path),
+                    "maa_adb_path": str(config.conf.maa_adb_path),
+                    "adb": str(config.conf.adb),
+                    "maa_conn_preset": str(config.conf.maa_conn_preset),
+                    "maa_touch_option": str(config.conf.maa_touch_option),
+                },
+                ensure_ascii=False,
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    maa_check_job.update(
+        {
+            "id": time.time_ns(),
+            "process": process,
+            "status": "running",
+            "message": "正在测试……",
+        }
+    )
+    return {"status": "running", "message": "正在测试……"}
+
+
+@app.route("/check-maa/status")
+@require_token
+def get_maa_check_status():
+    _collect_maa_check_result()
+    return {
+        "status": maa_check_job["status"],
+        "message": maa_check_job["message"],
+    }
 
 
 @app.route("/maa-conn-preset")

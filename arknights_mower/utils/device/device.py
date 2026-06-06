@@ -20,7 +20,7 @@ from arknights_mower.utils.device.scrcpy import Scrcpy
 from arknights_mower.utils.image import bytes2img, img2bytes
 from arknights_mower.utils.log import logger, save_screenshot
 from arknights_mower.utils.network import get_new_port, is_port_in_use
-from arknights_mower.utils.simulator import restart_simulator
+from arknights_mower.utils.simulator import keep_mumupro_rendering, restart_simulator
 
 
 class Device:
@@ -259,6 +259,8 @@ class Device:
         if delta > 0:
             time.sleep(delta)
             start_time = min_time
+
+        keep_mumupro_rendering()
 
         if self.control.mumu12IPC:
             while True:
