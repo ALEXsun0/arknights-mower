@@ -159,10 +159,6 @@ const onSelectionChange = (newValue) => {
   } else {
     simulator.value.index = '0'
   }
-  if (newValue === 'MuMuPro') {
-    if (simulator.value.mac_desktop == null) simulator.value.mac_desktop = 0
-    if (simulator.value.mac_keep_rendering == null) simulator.value.mac_keep_rendering = false
-  }
 }
 import { ref } from 'vue'
 import ChatBotSetting from '../components/ChatBotSetting.vue'
@@ -265,10 +261,6 @@ if (return_home_when_idle.value) {
                 <help-text>
                   <div>MuMu12：<code>模拟器路径\\shell\\adb.exe</code></div>
                   <div>
-                    MuMuPro（macOS）：
-                    <code>/Applications/MuMuPlayer.app/Contents/MacOS/MuMuEmulator.app/Contents/MacOS/tools/adb</code>
-                  </div>
-                  <div>
                     蓝叠Air（macOS）：Homebrew 安装后通常位于
                     <code>/opt/homebrew/bin/adb</code>（Intel 机器为
                     <code>/usr/local/bin/adb</code>）
@@ -310,7 +302,6 @@ if (return_home_when_idle.value) {
                 <help-text>
                   <div>夜神：写到bin文件夹</div>
                   <div>MuMu12: 写到nx_main文件夹</div>
-                  <div>MuMuPro（macOS）：写到<code>/Applications/MuMuPlayer.app</code></div>
                 </help-text>
               </template>
               <n-input
@@ -333,30 +324,6 @@ if (return_home_when_idle.value) {
               <n-input-number v-model:value="simulator.wait_time">
                 <template #suffix>秒</template>
               </n-input-number>
-            </n-form-item>
-            <n-form-item v-if="simulator.name === 'MuMuPro'">
-              <template #label>
-                <span>macOS桌面编号</span>
-                <help-text>
-                  <div>0表示不切换桌面；填2会在启动MuMuPro前切到桌面2。</div>
-                  <div>这是尽力方案，macOS不提供直接把已有窗口搬到指定桌面的公开接口。</div>
-                  <div>需要在macOS键盘快捷键中启用“切换到桌面N”。</div>
-                </help-text>
-              </template>
-              <n-input-number
-                v-model:value="simulator.mac_desktop"
-                :min="0"
-                :max="9"
-                :precision="0"
-              />
-            </n-form-item>
-            <n-form-item v-if="simulator.name === 'MuMuPro'">
-              <n-checkbox v-model:checked="simulator.mac_keep_rendering">
-                保持MuMuPro渲染
-                <help-text>
-                  启用后会在截图循环中低频把当前多开编号的MuMuPro窗口取消最小化并置前。
-                </help-text>
-              </n-checkbox>
             </n-form-item>
             <n-form-item v-if="simulator.name">
               <template #label>

@@ -8,7 +8,8 @@ import { useConfigStore } from '@/stores/config'
 const store = useConfigStore()
 
 import { storeToRefs } from 'pinia'
-const { maa_path, maa_conn_preset, maa_touch_option } = storeToRefs(store)
+const { maa_path, maa_conn_preset, maa_touch_option, maa_startup_check } =
+  storeToRefs(store)
 
 import { folder_dialog } from '@/utils/dialog'
 
@@ -89,11 +90,14 @@ const maa_touch_options = ['maatouch', 'minitouch', 'adb'].map((x) => {
       <n-form-item label="触控模式">
         <n-select v-model:value="maa_touch_option" :options="maa_touch_options" />
       </n-form-item>
+      <n-form-item label="启动前测试">
+        <n-checkbox v-model:checked="maa_startup_check">启动Mower前测试Maa连接</n-checkbox>
+      </n-form-item>
     </n-form>
     <n-divider />
     <div class="misc-container">
       <n-button :loading="maa_testing" :disabled="maa_testing" @click="test_maa">
-        测试设置
+        测试连接
       </n-button>
       <div>{{ maa_msg }}</div>
     </div>

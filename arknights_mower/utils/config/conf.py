@@ -184,6 +184,8 @@ class MaaPart(ConfModel):
     maa_path: str = "D:\\MAA-v4.13.0-win-x64"
     maa_conn_preset: str = "General"
     maa_touch_option: str = "maatouch"
+    maa_startup_check: bool = False
+    "启动Mower前测试Maa连通性"
 
 
 class RecruitPart(ConfModel):
@@ -318,10 +320,6 @@ class SimulatorPart(ConfModel):
         "启动时间"
         hotkey: str = ""
         "老板键"
-        mac_desktop: int = 0
-        "macOS桌面编号，0表示不切换"
-        mac_keep_rendering: bool = False
-        "macOS保持MuMuPro窗口渲染"
 
     class CustomScreenshotConf(ConfModel):
         command: str = "adb -s 127.0.0.1:5555 shell screencap -p 2>/dev/null"

@@ -5,7 +5,6 @@ import mimetypes
 import os
 import pathlib
 import subprocess
-import sys
 import time
 from functools import wraps
 from io import BytesIO
@@ -25,6 +24,12 @@ from arknights_mower.solvers.record import clear_data, load_state, save_state
 from arknights_mower.utils import config
 from arknights_mower.utils.datetime import get_server_time
 from arknights_mower.utils.log import logger
+from arknights_mower.utils.maa_check import (
+    MAA_CHECK_TIMEOUT,
+    maa_check_command,
+    maa_check_timeout_result,
+    parse_maa_check_output,
+)
 from arknights_mower.utils.operators import Operators, build_global_plan
 from arknights_mower.utils.path import get_path
 
@@ -58,54 +63,8 @@ maa_check_job = {
     "process": None,
     "status": "idle",
     "message": "",
+    "started_at": None,
 }
-
-
-MAA_CHECK_SCRIPT = r"""
-import json
-import pathlib
-import sys
-
-params = json.loads(sys.argv[1])
-try:
-    maa_path = pathlib.Path(params["maa_path"])
-    sys.path.append(str(maa_path / "Python"))
-
-    from asst.asst import Asst
-
-    fastest_screencap = {}
-
-    def callback(msg, details, arg):
-        try:
-            payload = json.loads(details.decode("utf-8"))
-            if payload.get("what") == "FastestWayToScreencap":
-                fastest_screencap.update(payload.get("details") or {})
-        except Exception:
-            pass
-
-    callback_func = Asst.CallBackType(callback)
-    Asst.load(str(maa_path))
-    asst = Asst(callback=callback_func)
-    version = asst.get_version()
-    asst.set_instance_option(2, params["maa_touch_option"])
-    if asst.connect(params["maa_adb_path"], params["adb"], params["maa_conn_preset"]):
-        fastest_method = fastest_screencap.get("method")
-        fastest_cost = fastest_screencap.get("cost")
-        if fastest_method and fastest_cost is not None:
-            message = (
-                f"Maa {version} 加载成功，最快截图 {fastest_method} "
-                f"{fastest_cost}ms"
-            )
-        else:
-            message = f"Maa {version} 加载成功"
-        result = {"status": "success", "message": message}
-    else:
-        result = {"status": "failed", "message": "连接失败，请检查Maa日志！"}
-except Exception as e:
-    result = {"status": "failed", "message": "Maa加载失败：" + str(e)}
-
-print(json.dumps(result, ensure_ascii=False))
-"""
 
 
 def _collect_maa_check_result():
@@ -114,35 +73,33 @@ def _collect_maa_check_result():
         return
 
     if process.poll() is None:
+        started_at = maa_check_job.get("started_at")
+        if started_at and time.monotonic() - started_at > MAA_CHECK_TIMEOUT:
+            process.kill()
+            try:
+                process.communicate(timeout=1)
+            except Exception:
+                pass
+            result = maa_check_timeout_result(MAA_CHECK_TIMEOUT)
+            maa_check_job.update(
+                {
+                    "process": None,
+                    "status": result["status"],
+                    "message": result["message"],
+                    "started_at": None,
+                }
+            )
         return
 
     stdout, stderr = process.communicate()
-    result = None
-    for line in reversed(stdout.splitlines()):
-        try:
-            result = json.loads(line)
-            break
-        except json.JSONDecodeError:
-            pass
-
-    if result is None:
-        message = f"Maa测试进程异常退出：{process.returncode}"
-        if stderr.strip():
-            message += f"，{stderr.strip().splitlines()[-1]}"
-        maa_check_job.update(
-            {
-                "process": None,
-                "status": "failed",
-                "message": message,
-            }
-        )
-        return
+    result = parse_maa_check_output(stdout, stderr, process.returncode)
 
     maa_check_job.update(
         {
             "process": None,
-            "status": result.get("status", "failed"),
-            "message": result.get("message", ""),
+            "status": result["status"],
+            "message": result["message"],
+            "started_at": None,
         }
     )
 
@@ -535,24 +492,11 @@ def get_maa_adb_version():
         }
 
     process = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            MAA_CHECK_SCRIPT,
-            json.dumps(
-                {
-                    "maa_path": str(config.conf.maa_path),
-                    "maa_adb_path": str(config.conf.maa_adb_path),
-                    "adb": str(config.conf.adb),
-                    "maa_conn_preset": str(config.conf.maa_conn_preset),
-                    "maa_touch_option": str(config.conf.maa_touch_option),
-                },
-                ensure_ascii=False,
-            ),
-        ],
+        maa_check_command(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if __system__ == "windows" else 0,
     )
     maa_check_job.update(
         {
@@ -560,6 +504,7 @@ def get_maa_adb_version():
             "process": process,
             "status": "running",
             "message": "正在测试……",
+            "started_at": time.monotonic(),
         }
     )
     return {"status": "running", "message": "正在测试……"}

@@ -14,6 +14,7 @@ export const useConfigStore = defineStore('config', () => {
   const maa_adb_path = ref('')
   const maa_enable = ref(false)
   const maa_path = ref('')
+  const maa_startup_check = ref(false)
   const maa_expiring_medicine = ref(true)
   const maa_weekly_plan = ref([])
   const maa_weekly_plan_options = ref([])
@@ -36,12 +37,7 @@ export const useConfigStore = defineStore('config', () => {
   const shop_list = ref([])
   const item_list = ref([])
   const maa_gap = ref(false)
-  const simulator = ref({
-    name: '',
-    index: -1,
-    mac_desktop: 0,
-    mac_keep_rendering: false
-  })
+  const simulator = ref({ name: '', index: -1 })
   const resting_threshold = ref(50)
   const fia_threshold = ref(90)
   const rescue_threshold = ref(75)
@@ -245,6 +241,7 @@ export const useConfigStore = defineStore('config', () => {
     maa_adb_path.value = response.data.maa_adb_path
     maa_enable.value = response.data.maa_enable != 0
     maa_path.value = response.data.maa_path
+    maa_startup_check.value = response.data.maa_startup_check
     maa_rg_enable.value = response.data.maa_rg_enable == 1
     maa_long_task_type.value = response.data.maa_long_task_type
     maa_expiring_medicine.value = response.data.maa_expiring_medicine
@@ -350,6 +347,7 @@ export const useConfigStore = defineStore('config', () => {
       maa_adb_path: maa_adb_path.value,
       maa_enable: maa_enable.value ? 1 : 0,
       maa_path: maa_path.value,
+      maa_startup_check: maa_startup_check.value,
       maa_rg_enable: maa_rg_enable.value ? 1 : 0,
       maa_long_task_type: maa_long_task_type.value,
       maa_expiring_medicine: maa_expiring_medicine.value,
@@ -482,6 +480,7 @@ export const useConfigStore = defineStore('config', () => {
     maa_adb_path,
     maa_enable,
     maa_path,
+    maa_startup_check,
     maa_rg_enable,
     maa_long_task_type,
     maa_expiring_medicine,
