@@ -261,6 +261,10 @@ if (return_home_when_idle.value) {
                 <help-text>
                   <div>MuMu12：<code>模拟器路径\\shell\\adb.exe</code></div>
                   <div>
+                    MuMuPro（macOS）：
+                    <code>/Applications/MuMuPlayer.app/Contents/MacOS/MuMuEmulator.app/Contents/MacOS/tools/adb</code>
+                  </div>
+                  <div>
                     蓝叠Air（macOS）：Homebrew 安装后通常位于
                     <code>/opt/homebrew/bin/adb</code>（Intel 机器为
                     <code>/usr/local/bin/adb</code>）
@@ -302,6 +306,7 @@ if (return_home_when_idle.value) {
                 <help-text>
                   <div>夜神：写到bin文件夹</div>
                   <div>MuMu12: 写到nx_main文件夹</div>
+                  <div>MuMuPro（macOS）：写到<code>/Applications/MuMuPlayer.app</code></div>
                 </help-text>
               </template>
               <n-input

@@ -446,7 +446,9 @@ def get_maa_adb_version():
         asst = Asst()
         version = asst.get_version()
         asst.set_instance_option(2, config.conf.maa_touch_option)
-        if asst.connect(config.conf.maa_adb_path, config.conf.adb):
+        if asst.connect(
+            config.conf.maa_adb_path, config.conf.adb, config.conf.maa_conn_preset
+        ):
             maa_msg = f"Maa {version} 加载成功"
         else:
             maa_msg = "连接失败，请检查Maa日志！"
