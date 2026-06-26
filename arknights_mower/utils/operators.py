@@ -701,7 +701,6 @@ class Operators:
         total = len(self.dorm)
 
         count_high = 0
-        count_low = 0
         free_name = []
 
         # 一次性遍历 dorm
@@ -718,10 +717,8 @@ class Operators:
                 op = self.operators[dorm.name]
                 if op.resting_priority == "high":
                     count_high += 1
-                else:
-                    count_low += 1
         available_high = max(0, dorm_count - count_high)
-        available_low = total - count_low - max(count_high, dorm_count)
+        available_low = total - max(count_high, dorm_count)
 
         if len(free_name) > 0:
             for name in free_name:
@@ -945,6 +942,9 @@ class Operator:
         # 是否为高效组
         return self.operator_type == "high"
 
+    def is_low_priority(self):
+        return self.is_high() and self.resting_priority == "low"
+
     def is_resting(self):
         return self.current_room.startswith("dorm")
 
@@ -969,6 +969,10 @@ class Operator:
         if self.room == "train":
             return False
         if self.operator_type == "high":
+            if self.is_low_priority() and (
+                self.current_room == "" or self.is_resting()
+            ):
+                return False
             if self.workaholic:
                 return (
                     self.current_room != self.room or self.index != self.current_index

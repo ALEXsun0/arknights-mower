@@ -277,6 +277,32 @@ class TestBaseScheduler(unittest.TestCase):
         solver.initialize_operators()
         solver.tasks = []
         solver._training_sm = MagicMock()
+        solver._training_sm.state = base_schedule.TrainingState.IDLE
+        solver._training_sm.has_trainee_context.return_value = False
+        solver._training_sm._read_physical_state.return_value = "idle"
+        return solver
+
+    def _create_train_plan_solver(self):
+        agent_base_config = PlanConfig("", "", "")
+        plan = {
+            "default_plan": Plan(
+                {
+                    "meeting": [Room("伊内丝", "", ["陈"])],
+                    "train": [Room("余", "", []), Room("至简", "", [])],
+                },
+                agent_base_config,
+            ),
+            "backup_plans": [],
+        }
+
+        solver = BaseSchedulerSolver()
+        solver.global_plan = plan
+        solver.initialize_operators()
+        solver.tasks = []
+        solver._training_sm = MagicMock()
+        solver._training_sm.state = base_schedule.TrainingState.IDLE
+        solver._training_sm.has_trainee_context.return_value = False
+        solver._training_sm._read_physical_state.return_value = "idle"
         return solver
 
     def _read_no_train_meeting(self, solver, allow_train=False):
@@ -285,6 +311,93 @@ class TestBaseScheduler(unittest.TestCase):
                 if allow_train:
                     return []
                 self.fail("训练室不应被读取")
+            op = solver.op_data.operators["伊内丝"]
+            op.current_room = "meeting"
+            op.current_index = 0
+            op.mood = 5
+            op.time_stamp = datetime.now()
+            return [{"agent": "伊内丝", "mood": 5}]
+
+        return read_room
+
+    def _read_train_plan_rooms(self, solver, allow_train=False, train_data=None):
+        train_data = train_data or []
+
+        def read_room(room, read_time_index):
+            if room == "train":
+                if allow_train:
+                    return train_data
+                self.fail("训练室不应被读取")
+            op = solver.op_data.operators["伊内丝"]
+            op.current_room = "meeting"
+            op.current_index = 0
+            op.mood = 5
+            op.time_stamp = datetime.now()
+            return [{"agent": "伊内丝", "mood": 5}]
+
+        return read_room
+
+    def _create_low_priority_group_solver(self):
+        agent_base_config = PlanConfig("", "", "")
+        plan = {
+            "default_plan": Plan(
+                {
+                    "meeting": [Room("伊内丝", "", ["陈"])],
+                    "room_1_1": [
+                        Room("夕", "感知", ["麒麟R夜刀"]),
+                        Room("令", "感知", ["火龙S黑角"]),
+                    ],
+                    "dormitory_1": [
+                        Room("塑心", "", []),
+                        Room("冰酿", "", []),
+                        Room("Free", "", []),
+                        Room("Free", "", []),
+                        Room("Free", "", []),
+                    ],
+                },
+                agent_base_config,
+            ),
+            "backup_plans": [],
+        }
+
+        solver = BaseSchedulerSolver()
+        solver.global_plan = plan
+        solver.initialize_operators()
+        solver.tasks = []
+        solver._training_sm = MagicMock()
+        solver._training_sm.state = base_schedule.TrainingState.IDLE
+        solver._training_sm.has_trainee_context.return_value = False
+        solver._training_sm._read_physical_state.return_value = "idle"
+
+        solver.op_data.operators["塑心"].current_room = "dormitory_1"
+        solver.op_data.operators["塑心"].current_index = 0
+        solver.op_data.operators["塑心"].mood = 24
+        solver.op_data.operators["塑心"].time_stamp = datetime.now()
+
+        solver.op_data.operators["冰酿"].current_room = "dormitory_1"
+        solver.op_data.operators["冰酿"].current_index = 1
+        solver.op_data.operators["冰酿"].mood = 24
+        solver.op_data.operators["冰酿"].time_stamp = datetime.now()
+
+        solver.op_data.operators["夕"].resting_priority = "low"
+        solver.op_data.operators["夕"].current_room = ""
+        solver.op_data.operators["夕"].current_index = -1
+        solver.op_data.operators["夕"].mood = 12
+        solver.op_data.operators["夕"].time_stamp = datetime.now()
+
+        solver.op_data.operators["令"].current_room = "room_1_1"
+        solver.op_data.operators["令"].current_index = 1
+        solver.op_data.operators["令"].mood = 5
+        solver.op_data.operators["令"].time_stamp = datetime.now()
+        return solver
+
+    def _read_low_priority_group_rooms(self, solver):
+        def read_room(room, read_time_index):
+            if room == "room_1_1":
+                return [
+                    {"agent": "", "mood": 0},
+                    {"agent": "令", "mood": 5},
+                ]
             op = solver.op_data.operators["伊内丝"]
             op.current_room = "meeting"
             op.current_index = 0
@@ -351,7 +464,6 @@ class TestBaseScheduler(unittest.TestCase):
     @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
     def test_agent_get_mood_reads_train_state_for_mastery_without_train_plan(self):
         solver = self._create_no_train_plan_solver()
-        solver._training_sm._read_physical_state.return_value = "idle"
 
         with (
             patch.object(
@@ -378,6 +490,98 @@ class TestBaseScheduler(unittest.TestCase):
         )
         solver._training_sm._read_physical_state.assert_called_once_with(in_place=True)
         solver._training_sm._apply_state.assert_called_once_with("idle")
+        self.assertFalse(
+            any(task.type == TaskTypes.SELF_CORRECTION for task in solver.tasks)
+        )
+
+    @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
+    def test_agent_get_mood_skips_train_when_only_train_plan_exists(self):
+        solver = self._create_train_plan_solver()
+
+        with (
+            patch.object(
+                base_schedule.config.conf, "refresh_backup_plan_after_mood", False
+            ),
+            patch.object(BaseSchedulerSolver, "enter_room") as mock_enter_room,
+            patch.object(BaseSchedulerSolver, "_get_mastery_plan", return_value={}),
+            patch.object(
+                BaseSchedulerSolver,
+                "get_agent_from_room",
+                side_effect=self._read_train_plan_rooms(solver),
+            ),
+            patch.object(BaseSchedulerSolver, "back"),
+        ):
+            result = solver.agent_get_mood(skip_dorm=True)
+
+        self.assertIsNone(result)
+        self.assertTrue(
+            all(call.args[0] != "train" for call in mock_enter_room.call_args_list)
+        )
+        self.assertFalse(solver._training_sm._read_physical_state.called)
+        self.assertFalse(
+            any(task.type == TaskTypes.SELF_CORRECTION for task in solver.tasks)
+        )
+
+    @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
+    def test_agent_get_mood_keeps_train_self_correction_with_mastery_context(self):
+        solver = self._create_train_plan_solver()
+
+        with (
+            patch.object(
+                base_schedule.config.conf, "refresh_backup_plan_after_mood", False
+            ),
+            patch.object(BaseSchedulerSolver, "enter_room") as mock_enter_room,
+            patch.object(
+                BaseSchedulerSolver,
+                "_get_mastery_plan",
+                return_value={"char_123_0": True},
+            ),
+            patch.object(
+                BaseSchedulerSolver,
+                "get_agent_from_room",
+                side_effect=self._read_train_plan_rooms(solver, allow_train=True),
+            ),
+            patch.object(BaseSchedulerSolver, "back"),
+        ):
+            result = solver.agent_get_mood(skip_dorm=True)
+
+        self.assertEqual(result, "self_correction")
+        self.assertTrue(
+            any(call.args[0] == "train" for call in mock_enter_room.call_args_list)
+        )
+        self.assertTrue(
+            any(
+                task.type == TaskTypes.SELF_CORRECTION and task.plan.get("train")
+                == ["余", "至简"]
+                for task in solver.tasks
+            )
+        )
+        solver._training_sm._read_physical_state.assert_called_once_with(in_place=True)
+        solver._training_sm._apply_state.assert_called_once_with("idle")
+
+    @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
+    def test_agent_get_mood_does_not_restore_kicked_low_priority_operator(self):
+        solver = self._create_low_priority_group_solver()
+
+        with (
+            patch.object(
+                base_schedule.config.conf, "refresh_backup_plan_after_mood", False
+            ),
+            patch.object(BaseSchedulerSolver, "enter_room"),
+            patch.object(BaseSchedulerSolver, "_get_mastery_plan", return_value={}),
+            patch.object(
+                BaseSchedulerSolver,
+                "get_agent_from_room",
+                side_effect=self._read_low_priority_group_rooms(solver),
+            ),
+            patch.object(BaseSchedulerSolver, "back"),
+        ):
+            result = solver.agent_get_mood(skip_dorm=True)
+
+        self.assertIsNone(result)
+        self.assertFalse(
+            any(task.type == TaskTypes.SELF_CORRECTION for task in solver.tasks)
+        )
 
     @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
     def test_get_agent_from_room_uses_train_slots_without_train_plan(self):

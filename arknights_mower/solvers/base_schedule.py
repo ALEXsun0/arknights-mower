@@ -765,9 +765,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
 
         return room
 
-    def should_read_train_in_mood(self):
-        if "train" in self.op_data.plan:
-            return True
+    def should_handle_train_room(self):
         if self.find_next_task(task_type=TaskTypes.SKILL_UPGRADE):
             return True
 
@@ -792,12 +790,14 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
 
     def agent_get_mood(self, skip_dorm=False, force=False):
         # 暂时规定纠错只适用于主班表
+        handle_train_room = self.should_handle_train_room()
+        allow_train_fix = handle_train_room and "train" in self.op_data.plan
         need_read = set(
             v.room
             for k, v in self.op_data.operators.items()
-            if v.need_to_refresh() and v.room in base_room_list
+            if v.need_to_refresh() and v.room in base_room_list and v.room != "train"
         )
-        if self.should_read_train_in_mood():
+        if handle_train_room:
             need_read.add("train")
         for room in need_read:
             error_count = 0
@@ -871,23 +871,31 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         plan = self.op_data.plan
         fix_plan = {}
         for key in plan:
-            if key == "train":
+            if key == "train" and not allow_train_fix:
                 continue
             need_fix = False
             _current_room = self.op_data.get_current_room(key, True)
             for idx, name in enumerate(_current_room):
+                plan_agent_name = plan[key][idx].agent
+                plan_agent = self.op_data.operators.get(plan_agent_name)
                 # 如果是空房间
                 if name == "":
+                    if (
+                        plan_agent
+                        and plan_agent.is_low_priority()
+                        and (plan_agent.current_room == "" or plan_agent.is_resting())
+                    ):
+                        continue
                     if not need_fix:
                         fix_plan[key] = ["Current"] * len(plan[key])
                         need_fix = True
-                    fix_plan[key][idx] = plan[key][idx].agent
+                    fix_plan[key][idx] = plan_agent_name
                     continue
                 # 随意人员则跳过
-                if plan[key][idx].agent == "Free":
+                if plan_agent_name == "Free":
                     continue
                 if not (
-                    name == plan[key][idx].agent
+                    name == plan_agent_name
                     or (
                         (
                             name in plan[key][idx].replacement
@@ -896,10 +904,16 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                         and len(plan[key][idx].replacement) > 0
                     )
                 ):
+                    if (
+                        plan_agent
+                        and plan_agent.is_low_priority()
+                        and (plan_agent.current_room == "" or plan_agent.is_resting())
+                    ):
+                        continue
                     if not need_fix:
                         fix_plan[key] = ["Current"] * len(plan[key])
                         need_fix = True
-                    fix_plan[key][idx] = plan[key][idx].agent
+                    fix_plan[key][idx] = plan_agent_name
         # 最后如果有任何高效组心情没有记录 或者高效组在宿舍
         miss_list = {k: v for (k, v) in self.op_data.operators.items() if v.not_valid()}
         if len(miss_list.keys()) > 0:
@@ -930,7 +944,11 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     continue
                 elif _agent.group != "":
                     # 把所有小组成员都移到工作站
-                    agents = self.op_data.groups[_agent.group]
+                    agents = [
+                        a
+                        for a in self.op_data.groups[_agent.group]
+                        if not self.op_data.operators[a].is_low_priority()
+                    ]
                     for a in agents:
                         __agent = self.op_data.operators[a]
                         if __agent.room not in fix_plan.keys():
@@ -978,7 +996,13 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     del fix_plan[item]
             # 还要确保同一组在同时上班
             for g in self.op_data.groups:
-                g_agents = self.op_data.groups[g]
+                g_agents = [
+                    x
+                    for x in self.op_data.groups[g]
+                    if not self.op_data.operators[x].is_low_priority()
+                ]
+                if not g_agents:
+                    continue
                 is_any_working = next(
                     (
                         x
@@ -1007,7 +1031,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                                 or self.op_data.operators[x].is_resting()
                             ):
                                 room = self.op_data.operators[x].room
-                                if room == "train":
+                                if room == "train" and not allow_train_fix:
                                     continue
                                 if room not in fix_plan:
                                     fix_plan[room] = ["Current"] * len(plan[room])
@@ -1031,7 +1055,8 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     self.skip()
                     return
                 else:
-                    fix_plan.pop("train", None)
+                    if not allow_train_fix:
+                        fix_plan.pop("train", None)
                     self.tasks.append(
                         SchedulerTask(
                             task_plan=fix_plan, task_type=TaskTypes.SELF_CORRECTION
@@ -1987,6 +2012,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             if (
                 current_resting + len(_replacement) >= self.ideal_resting_count
                 and self.op_data.available_free() == 0
+                and self.op_data.available_free("low") == 0
             ):
                 break
             if op.name in self.op_data.workaholic_agent:
@@ -2113,7 +2139,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         required = 0
         for x in agents:
             op = self.op_data.operators[x]
-            if op.workaholic:
+            if op.workaholic or op.is_low_priority():
                 continue
             required += 1
         logger.debug(f"需求:{current_resting} 当前休息")

@@ -354,7 +354,7 @@ def plan_metadata(op_data, tasks):
             if op_data.operators[dorm.name].is_high()
             and op_data.operators[dorm.name].resting_priority == "high"
         ]
-        if len(_high_dorms) == 0:
+        if len(_high_dorms) == 0 and not group_name:
             high_dorms = [
                 dorm for dorm in dorms if op_data.operators[dorm.name].is_high()
             ]
