@@ -9,6 +9,7 @@ from arknights_mower.utils.scheduler_task import (
     TaskTypes,
     check_dorm_ordering,
     find_next_task,
+    plan_metadata,
     scheduling,
     try_reorder,
 )
@@ -492,3 +493,58 @@ class TestScheduling(unittest.TestCase):
         op_data.operators["月见夜"].current_index = 2
 
         return op_data
+
+    def init_flexible_dorm_group_opdata(self):
+        agent_base_config = PlanConfig("", "", "")
+        plan_config = {
+            "central": [
+                Room("夕", "感知", ["麒麟R夜刀"]),
+                Room("令", "感知", ["火龙S黑角"]),
+            ],
+            "meeting": [Room("伊内丝", "", ["陈"])],
+            "dormitory_1": [
+                Room("塑心", "", []),
+                Room("冰酿", "", []),
+                Room("Free", "", []),
+                Room("Free", "", []),
+                Room("Free", "", []),
+            ],
+            "dormitory_2": [
+                Room("琴柳", "", []),
+                Room("阿米娅", "", []),
+                Room("Free", "", []),
+                Room("Free", "", []),
+                Room("Free", "", []),
+            ],
+        }
+        plan = {
+            "default_plan": Plan(plan_config, agent_base_config),
+            "backup_plans": [],
+        }
+        op_data = Operators(plan)
+        op_data.init_and_validate()
+        return op_data
+
+    def test_available_free_ignores_flexible_dorm_occupants(self):
+        op_data = self.init_flexible_dorm_group_opdata()
+        baseline = op_data.available_free("low")
+
+        op_data.operators["夕"].dorm_flexible = True
+        op_data.operators["夕"].current_room = "dormitory_1"
+        op_data.operators["夕"].current_index = 2
+        op_data.dorm[0].name = "夕"
+        op_data.dorm[0].time = datetime.now() + timedelta(hours=1)
+
+        self.assertEqual(baseline, op_data.available_free("low"))
+
+    def test_plan_metadata_ignores_flexible_dorm_group_members(self):
+        op_data = self.init_flexible_dorm_group_opdata()
+        op_data.operators["夕"].dorm_flexible = True
+        op_data.operators["夕"].current_room = "dormitory_1"
+        op_data.operators["夕"].current_index = 2
+        op_data.dorm[0].name = "夕"
+        op_data.dorm[0].time = datetime.now() + timedelta(hours=1)
+
+        tasks = plan_metadata(op_data, [])
+
+        self.assertTrue(all("central" not in task.plan for task in tasks))

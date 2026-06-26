@@ -30,6 +30,7 @@ def build_global_plan():
         resting_priority=config.plan.conf.resting_priority,
         ling_xi=config.plan.conf.ling_xi,
         workaholic=config.plan.conf.workaholic,
+        dorm_flexible=config.plan.conf.dorm_flexible,
         free_blacklist=conf.free_blacklist,
         ope_resting_priority=config.plan.conf.ope_resting_priority,
         resting_threshold=conf.resting_threshold,
@@ -72,6 +73,7 @@ def build_global_plan():
             i["conf"]["resting_priority"],
             ling_xi=i["conf"]["ling_xi"],
             workaholic=i["conf"]["workaholic"],
+            dorm_flexible=i["conf"].get("dorm_flexible", ""),
             free_blacklist=i["conf"]["free_blacklist"],
             ope_resting_priority=i["conf"]["ope_resting_priority"],
             resting_threshold=conf.resting_threshold,
@@ -644,6 +646,7 @@ class Operators:
         operator.exhaust_require = self.config.is_exhaust_require(operator.name)
         operator.rest_in_full = self.config.is_rest_in_full(operator.name)
         operator.workaholic = self.config.is_workaholic(operator.name)
+        operator.dorm_flexible = self.config.is_dorm_flexible(operator.name)
         operator.refresh_order_room = self.config.is_refresh_trading(operator.name)
         logger.debug(
             f"设置 {operator.name} 刷新交易房间: {operator.refresh_order_room}"
@@ -716,6 +719,8 @@ class Operators:
                 continue
             if dorm.name in self.operators:
                 op = self.operators[dorm.name]
+                if op.is_flexible_dorm():
+                    continue
                 if op.resting_priority == "high":
                     count_high += 1
                 else:
@@ -734,9 +739,10 @@ class Operators:
 
     def assign_dorm(self, name, is_new=False):
         is_high = self.operators[name].resting_priority == "high"
+        is_flexible = self.operators[name].is_flexible_dorm()
         _room = None
         max_count = sum(1 for key in self.plan if key.startswith("dorm"))
-        if not is_high:
+        if not is_high or is_flexible:
             for i in range(max_count, len(self.dorm)):
                 _name = self.dorm[i].name
                 if (
@@ -749,14 +755,15 @@ class Operators:
                 ):
                     _room = self.dorm[i]
                     break
-        if is_high or _room is None:
-            if not is_high:
+        if is_high or is_flexible or _room is None:
+            if not is_high and not is_flexible:
                 logger.warning("弹性模式下请勿设置过多低优先")
             _room = next(
                 obj
                 for obj in self.dorm
                 if obj.name not in self.operators.keys()
                 or not self.operators[obj.name].is_high()
+                or self.operators[obj.name].is_flexible_dorm()
                 or (obj.time is not None and obj.time < datetime.now())
             )
         logger.debug(f"安排{name}去{_room.position}")
@@ -897,6 +904,7 @@ class Operator:
         time_stamp=None,
         refresh_order_room=None,
         refresh_drained=False,
+        dorm_flexible=False,
     ):
         if refresh_order_room is not None:
             self.refresh_order_room = refresh_order_room
@@ -916,6 +924,7 @@ class Operator:
         self.exhaust_require = exhaust_require
         self.upper_limit = upper_limit
         self.rest_in_full = rest_in_full
+        self.dorm_flexible = dorm_flexible
         self.mood = mood
         self.current_index = current_index
         self.lower_limit = lower_limit
@@ -945,6 +954,9 @@ class Operator:
         # 是否为高效组
         return self.operator_type == "high"
 
+    def is_flexible_dorm(self):
+        return self.is_high() and self.dorm_flexible
+
     def is_resting(self):
         return self.current_room.startswith("dorm")
 
@@ -969,6 +981,10 @@ class Operator:
         if self.room == "train":
             return False
         if self.operator_type == "high":
+            if self.is_flexible_dorm() and (
+                self.current_room == "" or self.is_resting()
+            ):
+                return False
             if self.workaholic:
                 return (
                     self.current_room != self.room or self.index != self.current_index

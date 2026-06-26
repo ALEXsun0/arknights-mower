@@ -11,6 +11,7 @@ const plan_store = usePlanStore()
 const {
   ling_xi,
   resting_priority,
+  dorm_flexible,
   exhaust_require,
   rest_in_full,
   workaholic,
@@ -117,6 +118,7 @@ function create_sub_plan() {
       ling_xi: ling_xi.value,
       rest_in_full: [],
       resting_priority: [],
+      dorm_flexible: [],
       workaholic: [],
       refresh_trading: [],
       refresh_drained: [],
@@ -144,6 +146,7 @@ const current_conf = ref({
   ling_xi: ling_xi.value,
   rest_in_full: rest_in_full.value,
   resting_priority: resting_priority.value,
+  dorm_flexible: dorm_flexible.value,
   workaholic: workaholic.value,
   exhaust_require: exhaust_require.value,
   refresh_trading: refresh_trading.value
@@ -155,6 +158,7 @@ watchEffect(() => {
       ling_xi: ling_xi.value,
       rest_in_full: rest_in_full.value,
       resting_priority: resting_priority.value,
+      dorm_flexible: dorm_flexible.value,
       workaholic: workaholic.value,
       exhaust_require: exhaust_require.value,
       refresh_trading: refresh_trading.value,
@@ -173,6 +177,7 @@ watchEffect(() => {
     rest_in_full.value = current_conf.value.rest_in_full
     exhaust_require.value = current_conf.value.exhaust_require
     resting_priority.value = current_conf.value.resting_priority
+    dorm_flexible.value = current_conf.value.dorm_flexible
     workaholic.value = current_conf.value.workaholic
     refresh_trading.value = current_conf.value.refresh_trading
     free_blacklist.value = current_conf.value.free_blacklist
@@ -455,6 +460,13 @@ function movePlanForward() {
     <n-form-item>
       <template #label><span>宿舍低优先级干员</span><help-text>请查阅文档</help-text></template>
       <slick-operator-select v-model="current_conf.resting_priority"></slick-operator-select>
+    </n-form-item>
+    <n-form-item>
+      <template #label>
+        <span>弹性宿舍位干员</span>
+        <help-text>不占总宿舍位，可被随时踢出，绑组宿舍时间不计入</help-text>
+      </template>
+      <slick-operator-select v-model="current_conf.dorm_flexible"></slick-operator-select>
     </n-form-item>
     <n-form-item>
       <template #label>

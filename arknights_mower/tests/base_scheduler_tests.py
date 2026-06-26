@@ -294,6 +294,69 @@ class TestBaseScheduler(unittest.TestCase):
 
         return read_room
 
+    def _create_flexible_dorm_group_solver(self):
+        agent_base_config = PlanConfig("", "", "")
+        plan = {
+            "default_plan": Plan(
+                {
+                    "meeting": [Room("伊内丝", "", ["陈"])],
+                    "room_1_1": [
+                        Room("夕", "感知", ["麒麟R夜刀"]),
+                        Room("令", "感知", ["火龙S黑角"]),
+                    ],
+                    "dormitory_1": [
+                        Room("塑心", "", []),
+                        Room("冰酿", "", []),
+                        Room("Free", "", []),
+                        Room("Free", "", []),
+                        Room("Free", "", []),
+                    ],
+                },
+                agent_base_config,
+            ),
+            "backup_plans": [],
+        }
+
+        solver = BaseSchedulerSolver()
+        solver.global_plan = plan
+        solver.initialize_operators()
+        solver.tasks = []
+        solver._training_sm = MagicMock()
+
+        for idx, name in enumerate(["塑心", "冰酿"]):
+            solver.op_data.operators[name].current_room = "dormitory_1"
+            solver.op_data.operators[name].current_index = idx
+            solver.op_data.operators[name].mood = 24
+            solver.op_data.operators[name].time_stamp = datetime.now()
+
+        solver.op_data.operators["夕"].dorm_flexible = True
+        solver.op_data.operators["夕"].current_room = ""
+        solver.op_data.operators["夕"].current_index = -1
+        solver.op_data.operators["夕"].mood = 12
+        solver.op_data.operators["夕"].time_stamp = datetime.now()
+
+        solver.op_data.operators["令"].current_room = "room_1_1"
+        solver.op_data.operators["令"].current_index = 1
+        solver.op_data.operators["令"].mood = 5
+        solver.op_data.operators["令"].time_stamp = datetime.now()
+        return solver
+
+    def _read_flexible_dorm_group_rooms(self, solver):
+        def read_room(room, read_time_index):
+            if room == "room_1_1":
+                return [
+                    {"agent": "", "mood": 0},
+                    {"agent": "令", "mood": 5},
+                ]
+            op = solver.op_data.operators["伊内丝"]
+            op.current_room = "meeting"
+            op.current_index = 0
+            op.mood = 5
+            op.time_stamp = datetime.now()
+            return [{"agent": "伊内丝", "mood": 5}]
+
+        return read_room
+
     @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
     def test_agent_get_mood_skips_train_without_train_plan_or_mastery(self):
         solver = self._create_no_train_plan_solver()
@@ -378,6 +441,30 @@ class TestBaseScheduler(unittest.TestCase):
         )
         solver._training_sm._read_physical_state.assert_called_once_with(in_place=True)
         solver._training_sm._apply_state.assert_called_once_with("idle")
+
+    @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
+    def test_agent_get_mood_does_not_restore_kicked_flexible_dorm_operator(self):
+        solver = self._create_flexible_dorm_group_solver()
+
+        with (
+            patch.object(
+                base_schedule.config.conf, "refresh_backup_plan_after_mood", False
+            ),
+            patch.object(BaseSchedulerSolver, "enter_room"),
+            patch.object(BaseSchedulerSolver, "_get_mastery_plan", return_value={}),
+            patch.object(
+                BaseSchedulerSolver,
+                "get_agent_from_room",
+                side_effect=self._read_flexible_dorm_group_rooms(solver),
+            ),
+            patch.object(BaseSchedulerSolver, "back"),
+        ):
+            result = solver.agent_get_mood(skip_dorm=True)
+
+        self.assertIsNone(result)
+        self.assertFalse(
+            any(task.type == TaskTypes.SELF_CORRECTION for task in solver.tasks)
+        )
 
     @patch.object(BaseSchedulerSolver, "__init__", lambda x: None)
     def test_get_agent_from_room_uses_train_slots_without_train_plan(self):

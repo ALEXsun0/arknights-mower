@@ -41,6 +41,7 @@ class PlanConfig:
         resting_priority: str,
         ling_xi: int = 0,
         workaholic: str = "",
+        dorm_flexible: str = "",
         free_blacklist: str = "",
         resting_threshold: float = 0.5,
         refresh_trading_config: str = "",
@@ -56,6 +57,7 @@ class PlanConfig:
             resting_priority: 低优先级
             ling_xi: 令夕模式
             workaholic: 0心情工作
+            dorm_flexible: 弹性宿舍位
             free_blacklist: 宿舍黑名单
             resting_threshold: 心情阈值
             refresh_trading_config: 跑单时间刷新干员
@@ -64,6 +66,7 @@ class PlanConfig:
         self.rest_in_full = to_list(rest_in_full)
         self.exhaust_require = to_list(exhaust_require)
         self.workaholic = to_list(workaholic)
+        self.dorm_flexible = to_list(dorm_flexible)
         self.resting_priority = to_list(resting_priority)
         self.free_blacklist = to_list(free_blacklist)
         # 0 为均衡模式
@@ -88,6 +91,9 @@ class PlanConfig:
 
     def is_workaholic(self, agent_name) -> bool:
         return agent_name in self.workaholic
+
+    def is_dorm_flexible(self, agent_name) -> bool:
+        return agent_name in self.dorm_flexible
 
     def is_resting_priority(self, agent_name) -> bool:
         return agent_name in self.resting_priority
@@ -117,6 +123,7 @@ class PlanConfig:
             "rest_in_full",
             "exhaust_require",
             "workaholic",
+            "dorm_flexible",
             "resting_priority",
             "free_blacklist",
             "refresh_trading_config",

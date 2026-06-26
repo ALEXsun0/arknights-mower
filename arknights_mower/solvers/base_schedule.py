@@ -878,6 +878,15 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             for idx, name in enumerate(_current_room):
                 # 如果是空房间
                 if name == "":
+                    if (
+                        plan[key][idx].agent in self.op_data.operators
+                        and self.op_data.operators[plan[key][idx].agent].is_flexible_dorm()
+                        and (
+                            self.op_data.operators[plan[key][idx].agent].current_room == ""
+                            or self.op_data.operators[plan[key][idx].agent].is_resting()
+                        )
+                    ):
+                        continue
                     if not need_fix:
                         fix_plan[key] = ["Current"] * len(plan[key])
                         need_fix = True
@@ -896,6 +905,15 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                         and len(plan[key][idx].replacement) > 0
                     )
                 ):
+                    if (
+                        plan[key][idx].agent in self.op_data.operators
+                        and self.op_data.operators[plan[key][idx].agent].is_flexible_dorm()
+                        and (
+                            self.op_data.operators[plan[key][idx].agent].current_room == ""
+                            or self.op_data.operators[plan[key][idx].agent].is_resting()
+                        )
+                    ):
+                        continue
                     if not need_fix:
                         fix_plan[key] = ["Current"] * len(plan[key])
                         need_fix = True
@@ -930,7 +948,11 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     continue
                 elif _agent.group != "":
                     # 把所有小组成员都移到工作站
-                    agents = self.op_data.groups[_agent.group]
+                    agents = [
+                        a
+                        for a in self.op_data.groups[_agent.group]
+                        if not self.op_data.operators[a].is_flexible_dorm()
+                    ]
                     for a in agents:
                         __agent = self.op_data.operators[a]
                         if __agent.room not in fix_plan.keys():
@@ -978,7 +1000,13 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     del fix_plan[item]
             # 还要确保同一组在同时上班
             for g in self.op_data.groups:
-                g_agents = self.op_data.groups[g]
+                g_agents = [
+                    x
+                    for x in self.op_data.groups[g]
+                    if not self.op_data.operators[x].is_flexible_dorm()
+                ]
+                if not g_agents:
+                    continue
                 is_any_working = next(
                     (
                         x
@@ -2113,7 +2141,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
         required = 0
         for x in agents:
             op = self.op_data.operators[x]
-            if op.workaholic:
+            if op.workaholic or op.is_flexible_dorm():
                 continue
             required += 1
         logger.debug(f"需求:{current_resting} 当前休息")

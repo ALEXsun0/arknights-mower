@@ -338,6 +338,8 @@ def plan_metadata(op_data, tasks):
     for dorm in op_data.dorm:
         if dorm.name and dorm.name in op_data.operators:
             operator = op_data.operators[dorm.name]
+            if operator.is_flexible_dorm():
+                continue
             grouped_dorms[operator.group].append(dorm)
             if not operator.is_high():
                 free_rooms.append(dorm)
