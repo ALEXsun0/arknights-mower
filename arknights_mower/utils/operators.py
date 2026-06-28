@@ -755,17 +755,23 @@ class Operators:
                 ):
                     _room = self.dorm[i]
                     break
-        if is_high or is_flexible or _room is None:
+        if _room is None:
             if not is_high and not is_flexible:
                 logger.warning("弹性模式下请勿设置过多低优先")
             _room = next(
-                obj
-                for obj in self.dorm
-                if obj.name not in self.operators.keys()
-                or not self.operators[obj.name].is_high()
-                or self.operators[obj.name].is_flexible_dorm()
-                or (obj.time is not None and obj.time < datetime.now())
+                (
+                    obj
+                    for obj in self.dorm
+                    if obj.name not in self.operators.keys()
+                    or not self.operators[obj.name].is_high()
+                    or self.operators[obj.name].is_flexible_dorm()
+                    or (obj.time is not None and obj.time < datetime.now())
+                ),
+                None,
             )
+        if _room is None and is_flexible:
+            logger.debug(f"{name} 无可用宿舍位，保持在岗")
+            return None
         logger.debug(f"安排{name}去{_room.position}")
         _room.name = name
         _room.time = None

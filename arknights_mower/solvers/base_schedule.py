@@ -2207,6 +2207,8 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 if self.op_data.operators[x].workaholic:
                     continue
                 _dorm = self.op_data.assign_dorm(x, True)
+                if _dorm is None and self.op_data.operators[x].is_flexible_dorm():
+                    continue
             logger.debug(_dorm)
             for k, v in __plan.items():
                 if k not in plan.keys():

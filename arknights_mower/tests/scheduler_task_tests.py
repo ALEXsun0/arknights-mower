@@ -547,4 +547,4 @@ class TestScheduling(unittest.TestCase):
 
         tasks = plan_metadata(op_data, [])
 
-        self.assertTrue(all("central" not in task.plan for task in tasks))
+        self.assertTrue(any(task.plan.get("central") == ["夕", "令"] for task in tasks))

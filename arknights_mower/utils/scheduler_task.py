@@ -237,7 +237,7 @@ def generate_plan_by_drom(tasks, op_data):
                     )
                 plan[op.current_room][op.current_index] = "Free"
             else:
-                # 拉全组
+                # 主班弹性宿舍位仍需跟随整组回班
                 agents = op_data.groups[op.group] if op.group != "" else [op.name]
                 for agent in agents:
                     o = op_data.operators[agent]
@@ -338,8 +338,6 @@ def plan_metadata(op_data, tasks):
     for dorm in op_data.dorm:
         if dorm.name and dorm.name in op_data.operators:
             operator = op_data.operators[dorm.name]
-            if operator.is_flexible_dorm():
-                continue
             grouped_dorms[operator.group].append(dorm)
             if not operator.is_high():
                 free_rooms.append(dorm)
@@ -355,6 +353,7 @@ def plan_metadata(op_data, tasks):
             for dorm in dorms
             if op_data.operators[dorm.name].is_high()
             and op_data.operators[dorm.name].resting_priority == "high"
+            and not op_data.operators[dorm.name].is_flexible_dorm()
         ]
         if len(_high_dorms) == 0:
             high_dorms = [
