@@ -8,6 +8,7 @@ from arknights_mower.utils.csleep import MowerExit, csleep
 from arknights_mower.utils.device.adb_client.core import query_mumu_adb_port
 from arknights_mower.utils.device.adb_client.session import Session
 from arknights_mower.utils.log import logger
+from arknights_mower.utils.path import resolve_config_path
 
 
 class Simulator_Type(Enum):
@@ -34,7 +35,7 @@ def _clear_mumu_adb_transport() -> None:
     另一台模拟器一起掉线（双模拟器场景互相干扰）；改为仅断开当前实例的连接端点。
     """
     target = config.conf.adb
-    adb_bin = config.conf.maa_adb_path
+    adb_bin = resolve_config_path(config.conf.maa_adb_path)
     if not target or not adb_bin:
         return
     try:

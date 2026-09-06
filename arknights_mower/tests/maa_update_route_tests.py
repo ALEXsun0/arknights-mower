@@ -66,6 +66,76 @@ class TestMaaUpdateRoutes(unittest.TestCase):
         server.maa_resource_update_job.update({"thread": None, "status": "idle"})
         self.temp.cleanup()
 
+    def test_portable_maa_path_is_resolved_consistently_by_all_update_routes(self):
+        from arknights_mower.utils import path
+
+        current = {"version": "2026-09-03 01:00:00.000", "release_note": ""}
+        release = MaaResourceRelease(
+            version="2026-09-04 01:07:54.000", source="github", available=True
+        )
+        with (
+            patch.object(path, "_data_dir", Path(self.temp.name)),
+            patch.object(path, "global_space", "other-instance"),
+            patch.object(server.config.conf, "maa_path", "@app/MAA"),
+            patch.object(server, "__system__", "darwin"),
+            patch.object(server, "_mower_busy_response", return_value=None),
+            patch.object(server, "mower_thread", None),
+            patch.object(server, "active_job", return_value=False),
+            patch.object(server, "Thread", side_effect=_FakeThread) as launch,
+            patch(
+                "arknights_mower.utils.maa_update.has_maa_installation",
+                return_value=True,
+            ),
+            patch(
+                "arknights_mower.utils.maa_update.read_installed_version",
+                return_value="v6.17.0",
+            ),
+            patch(
+                "arknights_mower.utils.maa_update.get_latest_release",
+                return_value=_maa_release("v6.18.0"),
+            ),
+            patch(
+                "arknights_mower.utils.maa_resource_update.read_maa_resource_info",
+                return_value=current,
+            ),
+            patch(
+                "arknights_mower.utils.maa_resource_update.get_maa_resource_release",
+                return_value=release,
+            ),
+        ):
+            for prefix in ("maa-update", "maa-resource-update"):
+                info = self.client.get(
+                    f"/{prefix}/info", headers=self.headers
+                ).get_json()
+                self.assertEqual(info["target"], self.target)
+                payload = {
+                    "maa_path": "@app/MAA",
+                    "source": "github",
+                    "channel": "stable",
+                }
+                checked = self.client.post(
+                    f"/{prefix}/check", json=payload, headers=self.headers
+                ).get_json()
+                self.assertTrue(checked["ok"], checked)
+                started = self.client.post(
+                    f"/{prefix}/start",
+                    json={**payload, "check_id": checked["check_id"]},
+                    headers=self.headers,
+                ).get_json()
+                self.assertTrue(started["ok"], started)
+                self.assertEqual(launch.call_args.kwargs["args"][0], self.target)
+                server.maa_update_job.update({"thread": None, "status": "idle"})
+                server.maa_resource_update_job.update(
+                    {"thread": None, "status": "idle"}
+                )
+            resource = Path(self.target) / "resource"
+            resource.mkdir(parents=True)
+            (resource / "config.json").write_text(
+                '{"connection":[{"configName":"CompatMac"}]}'
+            )
+            response = self.client.get("/maa-conn-preset", headers=self.headers)
+            self.assertEqual(response.get_json(), ["CompatMac"])
+
     def test_maa_check_returns_check_id_only_for_new_version(self):
         with (
             patch.object(server, "__system__", "darwin"),

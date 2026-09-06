@@ -230,3 +230,6 @@ MAA
 # opencode
 .opencode/
 openspec/
+
+# Official macOS ADB, staged during packaging
+/platform-tools/

@@ -265,7 +265,9 @@ class CrossPlatformReleaseWorkflowTests(unittest.TestCase):
         )
         smoke_run = smoke_step["run"]
         self.assertIn('cwd="dist"', smoke_run)
-        self.assertIn('smoke("manager", 10)', smoke_run)
+        self.assertIn('smoke("manager", 30, require_ready=True)', smoke_run)
+        self.assertIn('env["MOWER_SMOKE_READY_FILE"]', smoke_run)
+        self.assertIn("not ready_file.is_file()", smoke_run)
         self.assertIn('smoke("mower", 20)', smoke_run)
 
         verify_run = job["steps"][verify]["run"]
@@ -297,8 +299,14 @@ class CrossPlatformReleaseWorkflowTests(unittest.TestCase):
         smoke_check = find_step(self.jobs["build-linux"], "Smoke check package")["run"]
         smoke_launch = find_step(self.jobs["build-linux"], "Smoke launch")["run"]
 
-        self.assertIn('x64) file smoke/mower/mower | grep -q "x86-64"', smoke_check)
-        self.assertIn('arm64) file smoke/mower/mower | grep -q "aarch64"', smoke_check)
+        self.assertRegex(
+            smoke_check, r'x64\)\s+file smoke/mower/mower \| grep -q "x86-64"'
+        )
+        self.assertRegex(
+            smoke_check, r'arm64\)\s+file smoke/mower/mower \| grep -q "aarch64"'
+        )
+        self.assertIn("smoke/mower/_internal/platform-tools/adb version", smoke_check)
+        self.assertIn("check_ldd smoke/mower/_internal/platform-tools/adb", smoke_check)
         self.assertIn("ldd", smoke_check)
         self.assertIn('if [ "${missing}" -gt 0 ]', smoke_check)
         self.assertIn('if [ "${exit_code}" -eq 124 ]', smoke_launch)

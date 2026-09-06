@@ -839,6 +839,13 @@ onUnmounted(() => {
       label-align="left"
     >
       <n-form-item label="Maa目录">
+        <template #label>
+          Maa目录
+          <help-text
+            >@app/MAA 表示全局 Mower 数据目录下的 MAA，所有实例共用，更新 Mower
+            时保留。也可以选择自定义目录。</help-text
+          >
+        </template>
         <n-input type="textarea" :autosize="true" v-model:value="maa_path" />
         <n-button @click="select_maa_dir" class="dialog-btn">...</n-button>
       </n-form-item>

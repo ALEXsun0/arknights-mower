@@ -4,6 +4,7 @@ import pathlib
 import sys
 
 from arknights_mower.utils import config
+from arknights_mower.utils.path import resolve_config_path
 from arknights_mower.utils.update_runtime import frozen
 
 MAA_CHECK_TIMEOUT = 30
@@ -44,8 +45,8 @@ print(json.dumps(result, ensure_ascii=True))
 
 def maa_check_params(adb: str | None = None) -> dict[str, str]:
     return {
-        "maa_path": str(config.conf.maa_path),
-        "maa_adb_path": str(config.conf.maa_adb_path),
+        "maa_path": resolve_config_path(str(config.conf.maa_path)),
+        "maa_adb_path": resolve_config_path(str(config.conf.maa_adb_path)),
         "adb": str(config.conf.adb if adb is None else adb),
         "maa_conn_preset": str(config.conf.maa_conn_preset),
         "maa_touch_option": str(config.conf.maa_touch_option),

@@ -277,9 +277,8 @@ if (return_home_when_idle.value) {
                 <help-text>
                   <div>MuMu12：<code>模拟器路径\\shell\\adb.exe</code></div>
                   <div>
-                    蓝叠Air（macOS）：Homebrew 安装后通常位于
-                    <code>/opt/homebrew/bin/adb</code>（Intel 机器为
-                    <code>/usr/local/bin/adb</code>）
+                    macOS 和 Linux 安装包自带 ADB。默认的 @internal/platform-tools/adb
+                    随程序位置解析，也可以手动选择其他 ADB。
                   </div>
                 </help-text>
               </template>
@@ -527,12 +526,12 @@ if (return_home_when_idle.value) {
               >
                 隐藏菜单栏图标
                 <help-text>
-                  重启生效。不创建托盘进程，关闭窗口后仍在后台运行，可通过浏览器访问原网页地址。
+                  重启生效。独立启动时不创建托盘进程，关闭窗口后仍在后台运行。多开管理器统一提供托盘，静默重启后也保留托盘入口。
                 </help-text>
               </n-checkbox>
               <n-checkbox v-else v-model:checked="webview.tray">
                 使用托盘图标
-                <help-text>重启生效</help-text>
+                <help-text>重启生效。多开管理器启动的实例统一使用管理器托盘。</help-text>
               </n-checkbox>
             </n-form-item>
             <n-form-item label="显示主题">

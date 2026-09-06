@@ -10,6 +10,9 @@ if str(SPEC_DIR) not in sys.path:
     sys.path.insert(0, str(SPEC_DIR))
 
 from build_assets import get_pyinstaller_common_datas
+from scripts.bundled_linux_adb import configure_linux_adb, linux_adb_assets
+
+adb_binaries, adb_datas = linux_adb_assets()
 
 block_cipher = None
 
@@ -82,7 +85,7 @@ site_packages = install_dir.parent
 mower_a = Analysis(
     ["webview_ui.py"],
     pathex=[],
-    binaries=[],
+    binaries=adb_binaries,
     datas=get_pyinstaller_common_datas()
     + [
         (
@@ -90,7 +93,7 @@ mower_a = Analysis(
             "onnxruntime/capi/",
         ),
     ]
-    + add_data,
+    + add_data + adb_datas,
     hiddenimports=PYWEBVIEW_GTK_HIDDENIMPORTS,
     hooksconfig={},
     runtime_hooks=[],
@@ -221,3 +224,5 @@ coll = COLLECT(
     upx_exclude=[],
     name="mower",
 )
+
+configure_linux_adb(coll.name)

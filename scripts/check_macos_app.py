@@ -97,6 +97,11 @@ def check_bundle(app_dir: Path, expected: str, runner=run_command) -> list[str]:
             macho_files.append(binary)
             errors.extend(check_binary_arch(binary, expected, runner))
 
+    bundled_adb = app_dir / "Contents/Frameworks/platform-tools/adb"
+    if bundled_adb.is_file():
+        macho_files.append(bundled_adb)
+        errors.extend(check_binary_arch(bundled_adb, expected, runner))
+
     for path in sorted(app_dir.rglob("*")):
         if not path.is_file() or path.suffix not in {".dylib", ".so"}:
             continue

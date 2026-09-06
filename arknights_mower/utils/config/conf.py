@@ -1,9 +1,13 @@
+import os
+import shutil
+import sys
 from pathlib import Path
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic_core import PydanticUndefined
 
 from arknights_mower import __rootdir__
+from arknights_mower.utils.path import get_path
 
 DEFAULT_LAUNCH_COMMAND = (
     "input keyevent KEYCODE_WAKEUP; "
@@ -12,13 +16,29 @@ DEFAULT_LAUNCH_COMMAND = (
 )
 
 
+def default_maa_directory():
+    return "@app/MAA"
+
+
+def default_adb_path():
+    name = "adb.exe" if sys.platform == "win32" else "adb"
+    bundled = get_path(f"@internal/platform-tools/{name}")
+    if bundled.is_file() or sys.platform == "darwin":
+        return f"@internal/platform-tools/{name}"
+    if sys.platform.startswith("linux"):
+        return os.environ.get("MOWER_ADB_BIN") or shutil.which("adb") or ""
+    return ""
+
+
 class ConfModel(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def nested_defaults(cls, data):
         for name, field in cls.model_fields.items():
             if name not in data:
-                if field.default is PydanticUndefined:
+                if field.default_factory is not None:
+                    data[name] = field.default_factory()
+                elif field.default is PydanticUndefined:
                     data[name] = field.annotation()
                 else:
                     data[name] = field.default
@@ -210,14 +230,16 @@ class LongTaskPart(ConfModel):
 
 
 class MaaPart(ConfModel):
-    maa_path: str = "D:\\MAA-v4.13.0-win-x64"
+    maa_path: str = Field(default_factory=default_maa_directory)
     maa_mirrorchyan_token: str = ""
     "Mirror酱下载 Token"
     maa_update_channel: str = "stable"
     "MAA 版本通道：stable 正式版，beta 公测版"
     maa_auto_check_update: bool = False
     "进入 Maa 设置页后自动检查 Maa 本体及资源更新"
-    maa_conn_preset: str = "General"
+    maa_conn_preset: str = Field(
+        default_factory=lambda: "CompatMac" if sys.platform == "darwin" else "General"
+    )
     maa_touch_option: str = "maatouch"
 
 
@@ -430,7 +452,7 @@ class SimulatorPart(ConfModel):
     "ADB连接地址"
     simulator: SimulatorConf
     "模拟器"
-    maa_adb_path: str = "D:\\Program Files\\Nox\\bin\\adb.exe"
+    maa_adb_path: str = Field(default_factory=default_adb_path)
     "ADB路径"
     close_simulator_when_idle: bool = False
     "任务结束后关闭游戏"

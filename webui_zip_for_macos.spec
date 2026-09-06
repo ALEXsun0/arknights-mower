@@ -23,6 +23,9 @@ if str(SPEC_DIR) not in sys.path:
     sys.path.insert(0, str(SPEC_DIR))
 
 from build_assets import get_pyinstaller_common_datas
+from scripts.prepare_macos_adb import prepare_macos_adb
+
+adb_dir = prepare_macos_adb()
 
 block_cipher = None
 
@@ -72,8 +75,11 @@ def existing_native_datas():
 mower_a = Analysis(
     ["webview_ui.py"],
     pathex=[],
-    binaries=[],
-    datas=get_pyinstaller_common_datas() + existing_native_datas() + add_data,
+    binaries=[(str(adb_dir / "adb"), "platform-tools")],
+    datas=get_pyinstaller_common_datas() + existing_native_datas() + add_data + [
+        (str(adb_dir / "NOTICE.txt"), "platform-tools"),
+        (str(adb_dir / "source.properties"), "platform-tools"),
+    ],
     hiddenimports=MACOS_HIDDEN_IMPORTS,
     hooksconfig={},
     runtime_hooks=[],
