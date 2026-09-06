@@ -273,6 +273,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            adb \
+            patchelf \
             libzbar0 \
             libgl1 \
             libglib2.0-0 \
@@ -312,14 +314,23 @@ jobs:
           tar -xzf "${pkg}" -C smoke
           # 主程序存在且带可执行权限
           test -x smoke/mower/mower
+          test -x smoke/mower/_internal/platform-tools/adb
+          smoke/mower/_internal/platform-tools/adb version
           # 必备资源存在（PyInstaller 目录布局随版本变化，用 find 兜底）
           find smoke/mower -name CHANGELOG.md | grep -q .
           find smoke/mower -name logo.png | grep -q .
           # 架构校验：file 输出必须与目标架构一致，不符即硬失败
           file smoke/mower/mower
+          file smoke/mower/_internal/platform-tools/adb
           case "${arch}" in
-            x64) file smoke/mower/mower | grep -q "x86-64" ;;
-            arm64) file smoke/mower/mower | grep -q "aarch64" ;;
+            x64)
+              file smoke/mower/mower | grep -q "x86-64"
+              file smoke/mower/_internal/platform-tools/adb | grep -q "x86-64"
+              ;;
+            arm64)
+              file smoke/mower/mower | grep -q "aarch64"
+              file smoke/mower/_internal/platform-tools/adb | grep -q "aarch64"
+              ;;
           esac
           # 动态库校验：把包内私有共享库目录加入搜索路径后检查解析结果
           package_library_dirs="$(
@@ -352,6 +363,7 @@ jobs:
             fi
           }
           check_ldd smoke/mower/mower
+          check_ldd smoke/mower/_internal/platform-tools/adb
           while IFS= read -r so; do
             if file "${so}" | grep -q ELF; then
               check_ldd "${so}"
@@ -451,12 +463,19 @@ jobs:
           import signal
           import subprocess
           import time
+          from pathlib import Path
 
-          def smoke(executable, seconds):
+          def smoke(executable, seconds, require_ready=False):
               binary = f"./mower.app/Contents/MacOS/{executable}"
+              env = os.environ.copy()
+              ready_file = Path(env["MOWER_DATA_DIR"]) / f"{executable}.ready"
+              ready_file.unlink(missing_ok=True)
+              if require_ready:
+                  env["MOWER_SMOKE_READY_FILE"] = str(ready_file)
               process = subprocess.Popen(
                   [binary],
                   cwd="dist",
+                  env=env,
                   start_new_session=True,
               )
               try:
@@ -466,6 +485,9 @@ jobs:
                       print(
                           f"::error::{executable} GUI 进程在 {seconds}s 内以 {status} 退出"
                       )
+                      raise SystemExit(1)
+                  if require_ready and not ready_file.is_file():
+                      print(f"::error::{executable} 进程存活，但实例列表未加载完成")
                       raise SystemExit(1)
                   print(f"{executable} GUI 进程成功拉起并存活 {seconds}s")
               finally:
@@ -484,7 +506,7 @@ jobs:
 
           # manager 是 Info.plist 中双击 .app 时真正执行的入口；mower 是其拉起的
           # 主程序。两者都要冒烟，避免只测内部二进制却漏掉默认入口。
-          smoke("manager", 10)
+          smoke("manager", 30, require_ready=True)
           smoke("mower", 20)
           PYEOF
 
@@ -500,6 +522,7 @@ jobs:
           done
 
           python scripts/check_macos_app.py dist/mower.app --arch ${{ matrix.macho }}
+          dist/mower.app/Contents/Frameworks/platform-tools/adb version
 
       - name: Package into DMG
         run: |

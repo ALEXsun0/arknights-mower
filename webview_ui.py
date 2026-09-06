@@ -117,7 +117,7 @@ def resolve_window_size(width, height, min_size=MIN_WINDOW_SIZE):
     return sanitize_window_size(width, height, min_size) or DEFAULT_WINDOW_SIZE
 
 
-def splash_screen(queue: mp.Queue):
+def splash_screen(queue):
     import tkinter as tk
     from tkinter.font import Font
 
@@ -126,10 +126,6 @@ def splash_screen(queue: mp.Queue):
     from arknights_mower.utils.path import get_path
 
     root = tk.Tk()
-    from arknights_mower.utils.update_runtime import frozen, hide_macos_dock_icon
-
-    if not frozen():
-        hide_macos_dock_icon()
     container = tk.Frame(root)
 
     logo_path = get_path("@internal/logo.png")
@@ -216,15 +212,14 @@ def append_query_param(url, key, value):
     return f"{url}{separator}{key}={quote(value)}"
 
 
-def start_tray(queue: mp.Queue, instance_name, port, url):
+def start_tray(queue, instance_name, port, url):
     from PIL import Image
     from pystray import Icon, Menu, MenuItem
 
     from arknights_mower.utils.path import get_path
-    from arknights_mower.utils.update_runtime import frozen, hide_macos_dock_icon
+    from arknights_mower.utils.update_runtime import hide_macos_dock_icon
 
-    if background_requested() or not frozen():
-        hide_macos_dock_icon()
+    hide_macos_dock_icon()
 
     logo_path = get_path("@internal/logo.png")
     img = Image.open(logo_path)
@@ -257,7 +252,7 @@ def start_tray(queue: mp.Queue, instance_name, port, url):
             ),
             Menu.SEPARATOR,
             MenuItem(
-                text="退出",
+                text="关闭实例",
                 action=lambda: queue.put("exit"),
             ),
         ),
@@ -312,7 +307,10 @@ def webview_window(
 
     def recv_msg():
         while True:
-            msg = child_conn.recv()
+            try:
+                msg = child_conn.recv()
+            except (EOFError, OSError):
+                return
             if msg == "exit":
                 window.confirm_close = False
                 window.destroy()
@@ -359,7 +357,7 @@ def webview_window(
 
 
 def close_child(process, connection=None):
-    """Reap auxiliary processes so closing a window leaves no Python Dock tile."""
+    """Reap auxiliary processes when their windows or tray close."""
     if process is None or process.pid is None:
         return
     if process.is_alive() and connection is not None:
@@ -376,14 +374,38 @@ def close_child(process, connection=None):
         process.join(3)
 
 
+def start_desktop_child(kind, *args, log_queue=None):
+    if sys.platform == "darwin":
+        from arknights_mower.utils.desktop_process import start_worker
+
+        if log_queue is not None:
+            return start_worker(kind, *args, log_queue=log_queue)
+        return start_worker(kind, *args)
+    target = {
+        "splash": splash_screen,
+        "tray": start_tray,
+        "window": webview_window,
+    }[kind]
+    if kind == "window":
+        parent, child = mp.Pipe()
+        args = (*args, log_queue)
+    else:
+        parent = child = mp.Queue()
+    process = mp.Process(target=target, args=(child, *args), daemon=True)
+    process.start()
+    if kind == "window":
+        child.close()
+    return process, parent
+
+
 def background_requested():
     return os.environ.get("MOWER_BACKGROUND") == "1"
 
 
 def run_desktop():
-    from queue import Empty, Queue
+    from queue import Empty
     from threading import Thread
-    from time import sleep
+    from time import monotonic, sleep
 
     from arknights_mower.utils import path
     from arknights_mower.utils import update_runtime as runtime
@@ -392,8 +414,8 @@ def run_desktop():
     if runtime.active_job() and os.environ.get("MOWER_RESTART_JOB") != owner.get("id"):
         sys.exit("软件更新或进程操作正在进行，请等待完成后启动 Mower")
     background = background_requested()
-    if background or not runtime.frozen():
-        runtime.hide_macos_dock_icon()
+    managed = os.environ.get("MOWER_MANAGED") == "1"
+    manager_owned = managed
     exit_if_webview_backend_missing()
     space = sys.argv[1] if len(sys.argv) >= 2 else None
     if space is not None and space.startswith("-"):
@@ -410,30 +432,36 @@ def run_desktop():
     # 否则它们经 title_version→resource_version import log.py 时会各自打开
     # runtime.log，Windows 上整点切换日志文件（os.rename 需独占）就会因多进程同时持有而失败。
     init_file_logging()
-    splash_queue = Queue() if background else mp.Queue()
+    splash_queue = None
     splash_process = None
     tray_process = None
     registration = runtime.RuntimeRegistration(
         "instance", space=path.global_space, name=instance_name
     )
     if not background:
-        splash_process = mp.Process(
-            target=splash_screen, args=(splash_queue,), daemon=True
-        )
-        splash_process.start()
-    splash_queue.put({"type": "text", "data": "加载配置文件"})
+        splash_process, splash_queue = start_desktop_child("splash")
+        splash_queue.put({"type": "text", "data": "加载配置文件"})
     from arknights_mower.utils import config
     from arknights_mower.utils.network import get_new_port, is_port_in_use
 
     conf = config.conf
-    tray = conf.webview.tray or (background and sys.platform != "darwin")
-    keep_running = tray or background or sys.platform == "darwin"
-    # webview_window 等 mp.Process 子进程把日志上行到这里，由主进程统一写入 runtime.log。
-    # 只有会拉起 webview_window（前台启动，或后台且有托盘可开关窗口）时才需要这条队列；
-    # 后台 macOS 无托盘时既不拉起窗口也不需要它，避免凭空创建 mp.Queue。
+    tray = conf.webview.tray or background or managed
+    keep_running = tray or sys.platform == "darwin"
+    # Keep the single file writer on every platform. macOS uses a pipe instead
+    # of shared semaphores so closing GUI helpers leaves no resource tracker.
+    log_listener = None
+    mp_log_queue = None
     if not background or tray:
-        mp_log_queue = mp.Queue()
+        if sys.platform == "darwin":
+            from arknights_mower.utils.desktop_process import log_channel
+
+            mp_log_queue = log_channel()
+        else:
+            mp_log_queue = mp.Queue()
         start_mp_listener(mp_log_queue)
+        from arknights_mower.utils import log as mower_log
+
+        log_listener = mower_log.mp_listener
     token = conf.webview.token
     host = "0.0.0.0" if token else "127.0.0.1"
     restart_port = os.environ.get("MOWER_RESTART_PORT", "")
@@ -454,7 +482,8 @@ def run_desktop():
         token_hash=sha256((token or "").encode()).hexdigest(),
     )
     registration.publish()
-    splash_queue.put({"type": "text", "data": "加载 Flask 依赖"})
+    if splash_queue is not None:
+        splash_queue.put({"type": "text", "data": "加载 Flask 依赖"})
     import server
 
     registration.running = lambda: bool(
@@ -471,32 +500,26 @@ def run_desktop():
         sleep(0.1)
     registration.record["ready"] = True
     registration.publish()
-    tray_queue = mp.Queue() if tray else Queue()
-    if tray:
-        tray_process = mp.Process(
-            target=start_tray,
-            args=(tray_queue, instance_name or path.global_space, port, url),
-            daemon=True,
+    tray_queue = None
+    if tray and not managed:
+        tray_process, tray_queue = start_desktop_child(
+            "tray", instance_name or path.global_space, port, url
         )
-        tray_process.start()
 
     def open_window():
-        config.parent_conn, child_conn = mp.Pipe()
-        config.webview_process = mp.Process(
-            target=webview_window,
-            args=(
-                child_conn,
-                path.global_space,
-                instance_name,
-                host,
-                port,
-                url,
-                keep_running,
-                mp_log_queue,
-            ),
-            daemon=True,
+        close_child(config.webview_process)
+        if config.parent_conn is not None:
+            config.parent_conn.close()
+        config.webview_process, config.parent_conn = start_desktop_child(
+            "window",
+            path.global_space,
+            instance_name,
+            host,
+            port,
+            url,
+            keep_running,
+            log_queue=mp_log_queue,
         )
-        config.webview_process.start()
 
     config.webview_process = None
     config.parent_conn = None
@@ -523,6 +546,7 @@ def run_desktop():
     )
     if resume:
         Thread(target=resume_after_update, daemon=True).start()
+    manager_missing_since = None
     try:
         while True:
             if registration.shutdown_requested():
@@ -545,27 +569,70 @@ def run_desktop():
                     config.parent_conn = None
                 if not keep_running:
                     break
-            if not tray:
+            if manager_owned:
+                if runtime.unified_managers():
+                    manager_missing_since = None
+                    if not managed:
+                        close_child(tray_process)
+                        if tray_queue is not None:
+                            tray_queue.close()
+                        tray_process = None
+                        tray_queue = None
+                        managed = True
+                elif manager_missing_since is None:
+                    manager_missing_since = monotonic()
+                elif managed and monotonic() - manager_missing_since >= 5:
+                    # A closed or crashed manager must not strand an instance.
+                    managed = False
+                    tray_process, tray_queue = start_desktop_child(
+                        "tray", instance_name or path.global_space, port, url
+                    )
+            messages = registration.take_commands() if manager_owned else []
+            if tray_queue is not None:
+                try:
+                    messages.append(tray_queue.get(timeout=0.5))
+                except Empty:
+                    pass
+            else:
                 sleep(0.5)
-                continue
-            try:
-                msg = tray_queue.get(timeout=0.5)
-            except Empty:
-                continue
-            if msg == "toggle":
-                if config.webview_process and config.webview_process.is_alive():
-                    close_child(config.webview_process, config.parent_conn)
-                else:
-                    open_window()
-            elif msg == "exit":
+            for msg in messages:
+                if msg == "toggle":
+                    if config.webview_process and config.webview_process.is_alive():
+                        close_child(config.webview_process, config.parent_conn)
+                    else:
+                        open_window()
+                elif msg == "browser":
+                    import webbrowser
+
+                    webbrowser.open(url)
+            if "exit" in messages:
                 break
     finally:
         config.stop_mower.set()
         close_child(config.webview_process, getattr(config, "parent_conn", None))
         close_child(tray_process)
+        if config.parent_conn is not None:
+            config.parent_conn.close()
+            config.parent_conn = None
+        if tray_queue is not None:
+            tray_queue.close()
+        if log_listener is not None:
+            log_listener.stop()
+        if mp_log_queue is not None:
+            mp_log_queue.close()
         registration.close()
 
 
 if __name__ == "__main__":
     mp.freeze_support()
-    run_desktop()
+    if sys.argv[1:2] == ["--desktop-worker"]:
+        from arknights_mower.utils.desktop_process import run_worker
+
+        target = {
+            "splash": splash_screen,
+            "tray": start_tray,
+            "window": webview_window,
+        }[sys.argv[2]]
+        run_worker(target, *sys.argv[3:])
+    else:
+        run_desktop()

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -11,6 +12,75 @@ from arknights_mower.utils.config.conf import Conf
 
 
 class TestMaaConfig(unittest.TestCase):
+    def test_defaults_share_global_maa_directory_independently_of_instance(self):
+        from arknights_mower.utils import path
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(path, "_data_dir", Path(root) / "data"),
+            patch.object(path, "_internal_dir", Path(root) / "bundle"),
+        ):
+            for platform in ("darwin", "win32", "linux"):
+                for space in ("one", "two", str(Path(root) / "custom-instance")):
+                    with (
+                        patch("sys.platform", platform),
+                        patch.object(path, "global_space", space),
+                    ):
+                        conf = Conf()
+                    self.assertEqual(conf.maa_path, str(Path(root) / "data/MAA"))
+                    self.assertEqual(
+                        conf.maa_conn_preset,
+                        "CompatMac" if platform == "darwin" else "General",
+                    )
+
+    def test_existing_maa_settings_including_explicit_empty_values_are_preserved(self):
+        configured = {
+            "maa_path": "/custom/maa",
+            "maa_adb_path": "/custom/adb",
+            "maa_conn_preset": "General",
+        }
+        for values in (configured, dict.fromkeys(configured, "")):
+            for platform in ("darwin", "win32", "linux"):
+                with (
+                    patch("sys.platform", platform),
+                    patch.dict(
+                        os.environ,
+                        {"MOWER_ADB_BIN": "/usr/bin/adb"},
+                    ),
+                ):
+                    conf = Conf(**values)
+                    restored = Conf(**conf.model_dump())
+                    for key, value in values.items():
+                        self.assertEqual(getattr(restored, key), value)
+
+    def test_adb_uses_bundle_then_linux_environment_or_path_and_windows_can_be_empty(
+        self,
+    ):
+        from arknights_mower.utils import path
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(path, "_internal_dir", Path(root)),
+            patch.dict(os.environ, {"MOWER_ADB_BIN": ""}),
+            patch("shutil.which", return_value=None) as which,
+        ):
+            for platform in ("win32", "linux"):
+                with patch("sys.platform", platform):
+                    self.assertEqual(Conf().maa_adb_path, "")
+            with patch("sys.platform", "linux"):
+                which.return_value = "/usr/bin/adb"
+                self.assertEqual(Conf().maa_adb_path, "/usr/bin/adb")
+                with patch.dict(os.environ, {"MOWER_ADB_BIN": "/custom/adb"}):
+                    self.assertEqual(Conf().maa_adb_path, "/custom/adb")
+            tools_dir = Path(root) / "platform-tools"
+            tools_dir.mkdir()
+            for name in ("adb", "adb.exe"):
+                (tools_dir / name).write_text("bundled executable")
+            for platform in ("darwin", "win32", "linux"):
+                with patch("sys.platform", platform):
+                    name = "adb.exe" if platform == "win32" else "adb"
+                    self.assertEqual(Conf().maa_adb_path, str(tools_dir / name))
+
     def test_mirrorchyan_token_round_trip(self):
         conf = Conf(
             maa_mirrorchyan_token="fixture-token",

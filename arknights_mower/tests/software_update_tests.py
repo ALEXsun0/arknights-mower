@@ -527,6 +527,33 @@ class WorkerTests(unittest.TestCase):
                     )
                     self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
 
+    def test_silent_restart_restores_unified_tray_and_managed_instances(self):
+        records = [
+            {"kind": "manager", "unified_tray": True},
+            {
+                "kind": "instance",
+                "managed": True,
+                "space": "test",
+                "name": "test",
+                "port": 58100,
+                "running": True,
+            },
+        ]
+        with patch.object(subprocess, "Popen") as process:
+            self.job.update(deployment="release", background=True)
+            self.worker().restart(records, verify=False)
+        self.assertEqual(process.call_count, 2)
+        manager_env, instance_env = [c.kwargs["env"] for c in process.call_args_list]
+        self.assertEqual(manager_env["MOWER_BACKGROUND"], "1")
+        self.assertEqual(instance_env["MOWER_BACKGROUND"], "1")
+        self.assertEqual(instance_env["MOWER_MANAGED"], "1")
+        self.assertEqual(instance_env["MOWER_RESUME_RUN"], "1")
+        self.assertEqual(instance_env["MOWER_RESTART_PORT"], "58100")
+
+        with patch.object(subprocess, "Popen") as process:
+            self.worker().restart(records[1:], verify=False)
+        self.assertEqual(process.call_args.kwargs["env"]["MOWER_MANAGED"], "0")
+
     def test_dependency_failure_restores_old_virtualenv_and_frontend(self):
         worker = self.worker()
         worker.old_commit = "old"
@@ -800,13 +827,13 @@ class ArchiveAndLauncherTests(unittest.TestCase):
                 ):
                     self.assertEqual(background_requested(), value == "1")
 
-    def test_desktop_background_respects_macos_tray_setting(self):
+    def test_desktop_background_preserves_trays_and_current_restart_behavior(self):
         import webview_ui
         from arknights_mower import utils
         from arknights_mower.utils import network, path
 
-        for system, background, tray_enabled, restart in product(
-            ("darwin", "linux", "win32"), (True, False), (True, False), (True, False)
+        for system, background, tray_enabled, restart, managed in product(
+            ("darwin", "linux", "win32"), *[(True, False)] * 4
         ):
             config = Mock()
             config.conf.webview.tray = tray_enabled
@@ -833,6 +860,7 @@ class ArchiveAndLauncherTests(unittest.TestCase):
                         "MOWER_RESTART_JOB": "fixture" if restart else "",
                         "MOWER_RESUME_RUN": "1",
                         "MOWER_RESTART_PORT": "58100",
+                        "MOWER_MANAGED": "1" if managed else "0",
                     },
                 ),
                 patch.dict(sys.modules, {"server": server}),
@@ -852,23 +880,34 @@ class ArchiveAndLauncherTests(unittest.TestCase):
                 ),
                 patch.object(update, "request_auto_check") as auto_check,
                 patch.object(webview_ui.mp, "Queue") as queue,
-                patch.object(webview_ui.mp, "Pipe", return_value=(Mock(), Mock())),
-                patch.object(webview_ui.mp, "Process") as process,
+                patch.object(
+                    webview_ui, "start_desktop_child", return_value=(Mock(), Mock())
+                ) as process,
+                patch(
+                    "arknights_mower.utils.desktop_process.log_channel",
+                    return_value=Mock(),
+                ),
+                patch.multiple(
+                    "arknights_mower.utils.log",
+                    init_file_logging=Mock(),
+                    start_mp_listener=Mock(),
+                    mp_listener=Mock(),
+                ),
                 patch("threading.Thread") as threads,
             ):
                 webview_ui.run_desktop()
                 auto_check.assert_called_once()
                 self.assertEqual(server.resource_update.running.call_count, 2)
-                targets = [call.kwargs["target"] for call in process.call_args_list]
-                expected = [] if background else [webview_ui.splash_screen]
-                if tray_enabled or (background and system != "darwin"):
-                    expected.append(webview_ui.start_tray)
+                targets = [call.args[0] for call in process.call_args_list]
+                expected = [] if background else ["splash"]
+                if (tray_enabled or background) and not managed:
+                    expected.append("tray")
                 if not background:
-                    expected.append(webview_ui.webview_window)
+                    expected.append("window")
                 self.assertEqual(targets, expected)
-                if background and system == "darwin" and not tray_enabled:
+                if system == "darwin":
                     queue.assert_not_called()
-                self.assertEqual(hide_dock.call_count, int(background))
+                hide_dock.assert_not_called()
                 registration.close.assert_called_once()
                 resumes = [
                     call.kwargs["target"]
@@ -880,6 +919,28 @@ class ArchiveAndLauncherTests(unittest.TestCase):
                     registration.shutdown_requested.return_value = False
                     resumes[0]()
                     server.start.assert_called_once_with("2")
+
+    def test_tray_always_hides_its_dock_icon(self):
+        from webview_ui import start_tray
+
+        for frozen, background in (
+            (True, True),
+            (True, False),
+            (False, True),
+            (False, False),
+        ):
+            with (
+                self.subTest(frozen=frozen, background=background),
+                patch.dict(
+                    os.environ, {"MOWER_BACKGROUND": "1" if background else "0"}
+                ),
+                patch.dict(sys.modules, {"pystray": Mock()}),
+                patch.object(runtime, "frozen", return_value=frozen),
+                patch.object(runtime, "hide_macos_dock_icon") as hide_dock,
+                patch("PIL.Image.open"),
+            ):
+                start_tray(Mock(), "test", 58100, "http://127.0.0.1:58100")
+                hide_dock.assert_called_once()
 
     def test_dock_helper_sets_accessory_policy(self):
         appkit = Mock()

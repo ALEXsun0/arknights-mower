@@ -180,6 +180,42 @@ def instances(directory=None):
     return result
 
 
+def managed_instances(directory=None, data_dir=None):
+    data_dir = os.environ.get("MOWER_DATA_DIR", "") if data_dir is None else data_dir
+    return [
+        record
+        for record in instances(directory)
+        if record.get("kind") == "instance"
+        and record.get("managed")
+        and record.get("data_dir", "") == data_dir
+    ]
+
+
+def unified_managers(directory=None, data_dir=None):
+    data_dir = os.environ.get("MOWER_DATA_DIR", "") if data_dir is None else data_dir
+    return [
+        record
+        for record in instances(directory)
+        if record.get("kind") == "manager"
+        and record.get("unified_tray")
+        and record.get("data_dir", "") == data_dir
+    ]
+
+
+def send_instance_command(record, action, directory=None):
+    """Address only the registered instance selected by the manager."""
+    directory = Path(directory or state_dir())
+    if action == "exit":
+        write_json(directory / "shutdown" / f"{record['id']}.json", {"manager": True})
+    elif action in ("toggle", "browser", "show"):
+        write_json(
+            directory / "commands" / record["id"] / f"{uuid4().hex}.json",
+            {"action": action},
+        )
+    else:
+        raise ValueError(f"Unknown instance command: {action}")
+
+
 class RuntimeRegistration:
     def __init__(self, kind, *, space="", name="", port=None, running=None):
         self.directory = state_dir()
@@ -201,6 +237,7 @@ class RuntimeRegistration:
             "argv": list(sys.argv),
             "cwd": os.getcwd(),
             "background": os.environ.get("MOWER_BACKGROUND") == "1",
+            "managed": kind == "instance" and os.environ.get("MOWER_MANAGED") == "1",
             "ready": False,
             "restart_job": os.environ.get("MOWER_RESTART_JOB", ""),
         }
@@ -220,15 +257,27 @@ class RuntimeRegistration:
     def shutdown_requested(self):
         return self.request.exists()
 
+    def take_commands(self):
+        actions = []
+        for path in sorted((self.directory / "commands" / self.id).glob("*.json")):
+            command = read_json(path, {})
+            path.unlink(missing_ok=True)
+            if command.get("action") in ("toggle", "browser", "show"):
+                actions.append(command["action"])
+        return actions
+
     def close(self):
+        from shutil import rmtree
+
         self.closed.set()
         self.thread.join(timeout=3)
         self.path.unlink(missing_ok=True)
         self.request.unlink(missing_ok=True)
+        rmtree(self.directory / "commands" / self.id, ignore_errors=True)
 
 
 def hide_macos_dock_icon():
-    """Auxiliary Cocoa/Tk/tray processes are accessory apps, with no Dock tile."""
+    """The tray process is an accessory app, with no Dock tile."""
     if sys.platform != "darwin":
         return
     try:
@@ -272,6 +321,7 @@ def launch_environment(record, job_id="", background=False):
         MOWER_BACKGROUND="1" if background else "0",
         MOWER_RESUME_RUN="1" if record.get("running") else "0",
         MOWER_RESTART_PORT=str(record.get("port") or ""),
+        MOWER_MANAGED="1" if record.get("managed") else "0",
     )
     if record.get("data_dir"):
         env["MOWER_DATA_DIR"] = record["data_dir"]

@@ -180,3 +180,15 @@ sudo pacman -S webkit2gtk-4.1 gobject-introspection
 依赖 `libgtk-3-0`，`gir1.2-soup-3.0` 依赖 `libsoup-3.0-0`，传递依赖会随之安装。
 Fedora 的 `webkit2gtk4.1 + gi-girepository` 覆盖 WebKit2 与 GObject 内省，`libgtk-3`
 提供 GTK3。Arch 的 `webkit2gtk-4.1` 会带 `gobject-introspection` 与 GTK3。
+
+## 直接部署的默认 MAA 与 ADB 配置
+
+新配置的 MAA 目录使用全局 Mower 数据目录下的 `MAA`，遵循 `MOWER_DATA_DIR`，不随实例保存路径改变。macOS 的连接预设为 `CompatMac`，Windows 和 Linux 为 `General`。只有缺失的配置项会使用默认值；用户已有路径、预设和显式保存的空字符串都保留。
+
+- macOS 安装包包含官方 Platform Tools 36.0.0 的 ADB 和许可证，下载包按固定 SHA-256 校验。源码部署可运行 `python scripts/prepare_macos_adb.py` 准备同一版本。
+- Linux x64 / ARM64 独立包包含构建机对应架构的 ADB、其动态依赖和许可证；构建机需安装 `adb` 与 `patchelf`。独立包优先使用内置 ADB，源码部署依次使用 `MOWER_ADB_BIN` 或系统 `PATH` 中的 `adb`，都不存在时留空。
+- Windows 不额外打包 ADB；如果包内已有 `platform-tools/adb.exe` 则作为默认值，否则留空。
+
+上述配置用于直接部署。Docker 继续沿用现有镜像构建和 entrypoint 写入路径的行为。
+
+macOS 的 GUI 冒烟检查除确认进程存活外，还等待多开管理器实际加载实例列表；未出现就绪标记即失败。macOS / Linux 发布检查同时运行内置 `adb version` 并核对目标架构和动态依赖。

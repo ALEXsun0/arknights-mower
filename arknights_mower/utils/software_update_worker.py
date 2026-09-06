@@ -900,8 +900,19 @@ class Worker:
         else:
             self.recovery_processes = processes
         for record in records:
-            if record["kind"] == "manager" and self.job["background"]:
+            if (
+                record["kind"] == "manager"
+                and self.job["background"]
+                and not record.get("unified_tray")
+            ):
                 continue
+            if record.get("managed") and not any(
+                r["kind"] == "manager"
+                and r.get("unified_tray")
+                and r.get("data_dir", "") == record.get("data_dir", "")
+                for r in records
+            ):
+                record = {**record, "managed": False}
             env = launch_environment(record, self.job["id"], self.job["background"])
             if self.job.get("tool_path"):
                 env["PATH"] = self.job["tool_path"]
@@ -926,7 +937,11 @@ class Worker:
         requested = {
             registration_key(record)
             for record in records
-            if not (record.get("kind") == "manager" and self.job["background"])
+            if not (
+                record.get("kind") == "manager"
+                and self.job["background"]
+                and not record.get("unified_tray")
+            )
         }
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
