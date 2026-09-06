@@ -54,9 +54,11 @@ class BaseSolver:
         if device is not None:
             self.device = device
         else:
-            for _ in range(3):
+            for attempt in range(3):
+                if config.stop_mower.is_set():
+                    raise MowerExit
                 try:
-                    self.device = Device()
+                    self.device = Device(wait_for_device=attempt > 0)
                     self.device.client.check_server_alive()
                     Session().connect(config.conf.adb)
                     if not self.device.check_resolution():
@@ -72,25 +74,16 @@ class BaseSolver:
                 except Exception as e:
                     last_exc = e
                     logger.warning(f"设备连接失败：{e}")
-                    # 自动关闭模式也负责首轮启动，无需用户提前打开模拟器。
-                    try:
-                        available = [
-                            d
-                            for d, status in Session().devices_list()
-                            if status == "device"
-                        ]
-                    except Exception:
-                        available = []
-                    if config.conf.adb and config.conf.adb not in available:
-                        if config.conf.close_simulator_when_idle:
-                            logger.info("已启用任务结束后关闭模拟器，启动目标模拟器")
-                            if not restart_simulator(stop=False, start=True):
-                                raise ConnectionError("首次任务启动模拟器失败") from e
-                    elif hasattr(self, "device") and self.device.client:
-                        self.device._safe_reconnect()
+                    if config.stop_mower.is_set():
+                        raise MowerExit
+                    if attempt < 2:
+                        # 首次初始化失败就恢复模拟器，不受任务结束后的关闭选项影响。
+                        logger.info("设备初始化连接失败，尝试重启模拟器")
+                        if not restart_simulator():
+                            raise ConnectionError("首次任务重启模拟器失败") from e
             else:
                 raise ConnectionError(
-                    "设备连接 3 次失败（判定设备无法连接，自动重启模拟器由上层处理）"
+                    "设备初始化失败，重启模拟器 2 次后仍无法连接"
                 ) from last_exc
 
         self.recog = recog if recog is not None else Recognizer(self.device)

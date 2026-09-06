@@ -67,14 +67,19 @@ class Client:
     """ADB Client"""
 
     def __init__(
-        self, device_id: str = None, connect: str = None, adb_bin: str = None
+        self,
+        device_id: str = None,
+        connect: str = None,
+        adb_bin: str = None,
+        *,
+        wait_for_device: bool = True,
     ) -> None:
         self.device_id = device_id
         self.connect = connect
         self.adb_bin = adb_bin
         self.error_limit = 3
         self.__init_adb()
-        self.__init_device()
+        self.__init_device(wait_for_device=wait_for_device)
 
     def __init_adb(self) -> None:
         if self.adb_bin is not None:
@@ -86,7 +91,7 @@ class Client:
             return
         raise RuntimeError("Can't start adb server")
 
-    def __init_device(self) -> None:
+    def __init_device(self, *, wait_for_device: bool = True) -> None:
         # wait for the newly started ADB server to probe emulators
         csleep(1)
         # 启动时先确认 adb server 已启动：走 adb.exe 命令路径可让未运行的 server 自动拉起，
@@ -97,8 +102,12 @@ class Client:
             raise RuntimeError("Can't start adb server") from e
         self.__connect_device()
         # 模拟器重启/更新后设备可能尚未在 adb 就绪：端点可能会漂移、设备短暂离线或仍在注册。
-        # 按配置的模拟器启动时间等待，期间反复重选/重连端口再探测，避免只连接一次就立即判定失败。
-        attempts = max(1, (int(config.conf.simulator.wait_time) + 1) // 2)
+        # 首次连接先快速探测，失败后由上层立即启动模拟器；重启后及运行中重连保留等待。
+        attempts = (
+            max(1, (int(config.conf.simulator.wait_time) + 1) // 2)
+            if wait_for_device
+            else 0
+        )
         for _ in range(attempts):
             devices = self.__available_devices()
             if self.device_id in devices:

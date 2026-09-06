@@ -117,19 +117,26 @@ class Device:
                 raise NotImplementedError
 
     def __init__(
-        self, device_id: str = None, connect: str = None, touch_device: str = None
+        self,
+        device_id: str = None,
+        connect: str = None,
+        touch_device: str = None,
+        *,
+        wait_for_device: bool = True,
     ) -> None:
         self.device_id = device_id
         self.connect = connect
         self.touch_device = touch_device
         self.client = None
         self.control = None
-        self.start()
+        self.start(wait_for_device=wait_for_device)
         # 进程退出时释放 adb 资源，避免退出后 DroidCast/scrcpy 等常驻连接藕断丝连
         atexit.register(self.close)
 
-    def start(self) -> None:
-        self.client = ADBClient(self.device_id, self.connect)
+    def start(self, *, wait_for_device: bool = True) -> None:
+        self.client = ADBClient(
+            self.device_id, self.connect, wait_for_device=wait_for_device
+        )
         self.control = Device.Control(self, self.client)
 
     def run(self, cmd: str) -> Optional[bytes]:

@@ -83,10 +83,12 @@ class TestCheckCurrentFocus(unittest.TestCase):
         self.device.bring_to_foreground = MagicMock()
         self.device.launch = MagicMock()
         self.device.start_droidcast = MagicMock()
-        self.restart_mock = patch(
-            "arknights_mower.utils.device.device.restart_simulator"
-        ).start()
-        self.addCleanup(self.restart_mock.stop)
+        self.restart_mock = self.enterContext(
+            patch(
+                "arknights_mower.utils.device.device.restart_simulator",
+                return_value=True,
+            )
+        )
 
     def _patchers(self) -> ExitStack:
         stack = ExitStack()
@@ -172,6 +174,29 @@ class TestCheckCurrentFocus(unittest.TestCase):
         self.assertEqual(self.device.current_focus.call_count, 9)
         self.assertEqual(self.restart_mock.call_count, 3)
         self.device.launch.assert_not_called()
+
+    def test_runtime_retries_then_restarts_regardless_of_idle_option(self):
+        for close_when_idle in (False, True):
+            with (
+                self.subTest(close_when_idle=close_when_idle),
+                patch.object(config.conf, "close_simulator_when_idle", close_when_idle),
+            ):
+                operation = MagicMock(
+                    side_effect=[ConnectionError("offline")] * 3 + ["connected"]
+                )
+                self.device.reconnect = MagicMock(
+                    side_effect=ConnectionError("offline")
+                )
+                actions = MagicMock()
+                actions.attach_mock(operation, "operation")
+                actions.attach_mock(self.device.reconnect, "reconnect")
+                actions.attach_mock(self.restart_mock, "restart")
+                self.assertEqual(self.device.recover(operation), "connected")
+                self.assertEqual(
+                    actions.mock_calls,
+                    [call.operation(), call.reconnect()] * 3
+                    + [call.restart(), call.reconnect(), call.operation()],
+                )
 
 
 class TestStartDroidcast(unittest.TestCase):

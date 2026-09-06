@@ -102,6 +102,50 @@ class TestInitDeviceWaitsForDevice(unittest.TestCase):
         client.adb_bin = "adb"
         return client
 
+    def test_first_connection_fails_without_waiting_for_missing_or_offline_device(self):
+        from arknights_mower.utils.device.device import Device
+
+        target = "127.0.0.1:16928"
+        for devices in (
+            [],
+            [(target, "offline")],
+            [(target, "unauthorized")],
+            [("127.0.0.1:16416", "device")],
+        ):
+            with (
+                self.subTest(devices=devices),
+                patch.object(config.conf, "adb", target),
+                patch.object(config.conf.simulator, "wait_time", 60),
+                patch.object(Client, "_Client__check_adb", return_value=True),
+                patch.object(Client, "_Client__exec"),
+                patch(
+                    "arknights_mower.utils.device.adb_client.core.query_mumu_adb_port",
+                    return_value=None,
+                ),
+                patch(
+                    "arknights_mower.utils.device.adb_client.core.Session"
+                ) as session,
+                patch("arknights_mower.utils.device.adb_client.core.csleep") as sleep,
+            ):
+                session.return_value.devices_list.return_value = devices
+                with self.assertRaisesRegex(RuntimeError, "Device connection failure"):
+                    Device(wait_for_device=False)
+                # 只保留 ADB server 的初始探测延时，不耗完 60 秒的模拟器启动窗口。
+                sleep.assert_called_once_with(1)
+
+    def test_first_connection_uses_ready_device_without_waiting(self):
+        target = "127.0.0.1:16928"
+        with (
+            patch.object(config.conf, "adb", target),
+            patch.object(Client, "_Client__exec"),
+            patch("arknights_mower.utils.device.adb_client.core.Session") as session,
+            patch("arknights_mower.utils.device.adb_client.core.csleep") as sleep,
+        ):
+            session.return_value.devices_list.return_value = [(target, "device")]
+            client = Client(adb_bin="adb", wait_for_device=False)
+        self.assertEqual(client.device_id, target)
+        sleep.assert_called_once_with(1)
+
     def test_succeeds_when_already_present_no_retry(self):
         client = self._client()
         client.device_id = "127.0.0.1:16928"

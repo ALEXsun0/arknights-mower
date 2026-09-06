@@ -150,33 +150,79 @@ class TestIdleSimulatorWake(unittest.TestCase):
 
 
 class TestInitialSimulatorRecovery(unittest.TestCase):
-    def test_unchecked_option_does_not_restart_in_outer_startup_loop(self):
+    def setUp(self):
         import arknights_mower.__main__ as main
 
-        with (
-            patch.object(base_schedule.config.conf, "close_simulator_when_idle", False),
-            patch.object(main, "initialize", side_effect=ConnectionError("no device")),
-            patch.object(main, "restart_simulator") as restart,
-        ):
-            with self.assertRaisesRegex(ConnectionError, "no device"):
-                main.simulate(None)
-        restart.assert_not_called()
+        self.main = main
+        self.stop = Event()
+        self.enterContext(patch.object(base_schedule.config, "stop_mower", self.stop))
+        self.enterContext(
+            patch.object(base_schedule.config.conf, "close_simulator_when_idle", False)
+        )
+        self.enterContext(patch.object(main, "base_scheduler", None))
+        self.initialize = self.enterContext(patch.object(main, "initialize"))
+        self.restart = self.enterContext(
+            patch.object(main, "restart_simulator", return_value=True)
+        )
 
-    def test_checked_option_keeps_startup_failure_recovery(self):
-        import arknights_mower.__main__ as main
+    def test_outer_startup_restarts_immediately_regardless_of_idle_option(self):
+        for close_when_idle in (False, True):
+            with (
+                self.subTest(close_when_idle=close_when_idle),
+                patch.object(
+                    base_schedule.config.conf,
+                    "close_simulator_when_idle",
+                    close_when_idle,
+                ),
+            ):
+                self.initialize.side_effect = [
+                    ConnectionError("no device"),
+                    base_schedule.MowerExit(),
+                ]
+                actions = MagicMock()
+                actions.attach_mock(self.initialize, "initialize")
+                actions.attach_mock(self.restart, "restart")
+                self.main.simulate(None)
+                self.assertEqual(
+                    actions.mock_calls,
+                    [call.initialize([]), call.restart(), call.initialize([])],
+                )
 
-        with (
-            patch.object(base_schedule.config.conf, "close_simulator_when_idle", True),
-            patch.object(main, "base_scheduler", None),
-            patch.object(
-                main,
-                "initialize",
-                side_effect=[ConnectionError("no device"), base_schedule.MowerExit()],
-            ),
-            patch.object(main, "restart_simulator") as restart,
-        ):
-            main.simulate(None)
-        restart.assert_called_once_with()
+    def test_failed_restart_does_not_continue_initialization(self):
+        self.initialize.side_effect = ConnectionError("no device")
+        self.restart.return_value = False
+        with self.assertRaisesRegex(ConnectionError, "首次初始化重启模拟器失败"):
+            self.main.simulate(None)
+        self.initialize.assert_called_once_with([])
+        self.restart.assert_called_once_with()
+
+    def test_previous_scheduler_is_not_reconnected_after_failed_initialization(self):
+        stale_scheduler = MagicMock()
+        self.initialize.side_effect = [
+            ConnectionError("no device"),
+            base_schedule.MowerExit(),
+        ]
+        with patch.object(self.main, "base_scheduler", stale_scheduler):
+            self.main.simulate(None)
+        stale_scheduler.device.reconnect.assert_not_called()
+        self.restart.assert_called_once_with()
+
+    def test_persistent_failure_keeps_outer_restart_limit(self):
+        self.initialize.side_effect = ConnectionError("no device")
+        with self.assertRaisesRegex(ConnectionError, "no device"):
+            self.main.simulate(None)
+        self.assertEqual(self.initialize.call_count, 3)
+        self.assertEqual(self.restart.call_count, 2)
+
+    def test_stop_during_initialization_does_not_restart(self):
+        def fail_and_stop(tasks):
+            self.stop.set()
+            raise ConnectionError("no device")
+
+        self.initialize.side_effect = fail_and_stop
+        self.main.simulate(None)
+        self.initialize.assert_called_once_with([])
+        self.restart.assert_not_called()
 
 
 class TestBaseScheduler(unittest.TestCase):

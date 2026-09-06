@@ -115,15 +115,13 @@ def simulate(saved, restart_after_mood_read=False):
             return
         except Exception as e:
             logger.exception(e)
-            if not config.conf.close_simulator_when_idle:
-                raise
+            if config.stop_mower.is_set():
+                return
             reconnect_tries += 1
             if reconnect_tries < 3:
-                restart_simulator()
-                # 首次 initialize 失败时模块全局 base_scheduler 仍是 None（initialize 内是局部变量），
-                # 不能拿它重连；下一次 initialize 会新建 Device 自然重连
-                if base_scheduler is not None:
-                    base_scheduler.device.reconnect()
+                if not restart_simulator():
+                    raise ConnectionError("首次初始化重启模拟器失败") from e
+                # 下一次 initialize 会新建 Device，不重连上次运行残留的 scheduler。
                 continue
             else:
                 raise e
