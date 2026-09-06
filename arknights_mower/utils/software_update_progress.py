@@ -35,6 +35,19 @@ def read_status(state):
     )
     if result.get("status") == "running" and (state / "active/cancel.json").exists():
         result["message"] = "正在取消更新，等待下载或构建进程退出"
+    # Bytes describe the package download only. Do not carry its percentage
+    # into extraction, dependency installation or instance restart.
+    result["progress"] = None
+    if result.get("status") == "succeeded":
+        result["progress"] = 100
+    elif (
+        result.get("phase") == "downloading"
+        and result.get("status") == "running"
+        and result.get("total", 0) > 0
+    ):
+        result["progress"] = min(
+            100, max(0, round(result.get("current", 0) / result["total"] * 100, 1))
+        )
     if log_path := result.get("log_path"):
         try:
             with Path(log_path).open("rb") as log:
@@ -73,10 +86,24 @@ main{max-width:880px;margin:24px auto;padding:24px;border-radius:12px;background
 h1{font-size:22px;margin:0 0 12px}p{overflow-wrap:anywhere}pre{max-height:55vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace}
 button,a{display:inline-block;box-sizing:border-box;min-height:40px;padding:8px 14px;border-radius:6px;font:inherit}
 button{cursor:pointer}button:disabled{cursor:default;opacity:.5}#bytes{font-variant-numeric:tabular-nums}#connection{opacity:.65}
+.progress-row{display:flex;align-items:center;gap:12px;margin:16px 0 8px}
+#progress{--progress-color:light-dark(#18a058,#63e2b7);display:block;flex:1;min-width:0;height:8px;border:0;border-radius:100px;overflow:hidden;appearance:none;background:light-dark(#eee,#ffffff14)}
+#progress::-webkit-progress-bar{background:light-dark(#eee,#ffffff14);border-radius:100px}
+#progress::-webkit-progress-value{background:var(--progress-color,#18a058);border-radius:100px;transition:width .2s ease}
+#progress::-moz-progress-bar{background:var(--progress-color,#18a058);border-radius:100px}
+#progress:indeterminate{background:linear-gradient(90deg,transparent,var(--progress-color,#18a058),transparent) 0 0/40% 100% no-repeat,light-dark(#eee,#ffffff14);animation:activity 1.6s ease-in-out infinite}
+#progress:indeterminate::-webkit-progress-bar{background:transparent}
+#progress:indeterminate::-moz-progress-bar{background:transparent}
+#progress[data-status="failed"]{--progress-color:light-dark(#d03050,#e88080)}#progress[data-status="cancelled"]{--progress-color:light-dark(#f0a020,#f2c97d)}
+#percentage{min-width:4ch;text-align:right;font-variant-numeric:tabular-nums}
+#message,#bytes,#connection{margin:8px 0}
+@keyframes activity{from{background-position:-70% 0}to{background-position:170% 0}}
+@media(prefers-reduced-motion:reduce){#progress:indeterminate{animation:none;background-position:50% 0}#progress::-webkit-progress-value{transition:none}}
 </style><main><h1>Mower 更新进度</h1>
+<div class="progress-row"><progress id="progress" max="100" aria-label="软件更新进度" aria-describedby="message"></progress><span id="percentage"></span></div>
 <p id="message" role="status" aria-live="polite">正在读取更新状态…</p><p id="bytes"></p>
 <p id="connection"></p><button id="cancel" disabled>取消更新</button> <a id="return" href="/mowersettings#software-update">返回 Mower</a>
-<details open><summary>安装日志</summary><pre id="log"></pre></details></main>
+<details><summary>安装日志</summary><pre id="log"></pre></details></main>
 <script>
 const parameters = new URLSearchParams(location.hash.slice(1));
 let token = parameters.get('token') ?? sessionStorage.getItem('mower-update-token') ?? '';
@@ -85,6 +112,7 @@ history.replaceState(null, '', location.pathname);
 const headers = {'token':token, 'X-Mower-Update':'1', 'Content-Type':'application/json'};
 const message = document.getElementById('message'), log = document.getElementById('log');
 const cancel = document.getElementById('cancel'), connection = document.getElementById('connection');
+const progress = document.getElementById('progress'), percentage = document.getElementById('percentage');
 document.getElementById('return').href = '/?'+new URLSearchParams({token}).toString();
 let job = null, cancelling = false;
 async function poll(){
@@ -94,6 +122,12 @@ async function poll(){
     const data = await response.json();
     if (!data.ok) throw new Error(data.message);
     job = data; message.textContent = data.message; log.textContent = data.log || '';
+    progress.dataset.status = data.status;
+    if (data.progress != null) progress.value = data.progress;
+    else if (data.status === 'running') progress.removeAttribute('value');
+    else progress.value = data.status === 'idle' ? 0 : 100;
+    percentage.textContent = data.progress != null ? data.progress+'%' : '';
+    progress.setAttribute('aria-valuetext', data.message || '正在读取更新状态');
     document.getElementById('bytes').textContent = data.current ? '已下载 '+(data.current/1048576).toFixed(1)+' MiB'+(data.total ? ' / '+(data.total/1048576).toFixed(1)+' MiB' : '') : '';
     connection.textContent = '';
     cancel.disabled = !data.cancellable || cancelling;

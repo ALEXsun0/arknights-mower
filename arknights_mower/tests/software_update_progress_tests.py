@@ -76,6 +76,59 @@ class ProgressTests(unittest.TestCase):
         self.assertFalse(read_status(self.state)["cancellable"])
         worker.check_cancelled()
 
+    def test_download_progress_uses_actual_bytes_and_stays_within_bounds(self):
+        for current, expected in ((0, 0), (1, 33.3), (3, 100), (4, 100)):
+            with self.subTest(current=current):
+                runtime.write_json(
+                    self.state / "status.json",
+                    {
+                        "status": "running",
+                        "phase": "downloading",
+                        "current": current,
+                        "total": 3,
+                    },
+                )
+                self.assertEqual(read_status(self.state)["progress"], expected)
+
+    def test_unmeasured_stages_do_not_reuse_completed_download_percentage(self):
+        for phase in (
+            "preparing",
+            "dependencies",
+            "building",
+            "extracting",
+            "stopping",
+            "installing",
+            "restarting",
+            "rollback",
+        ):
+            with self.subTest(phase=phase):
+                runtime.write_json(
+                    self.state / "status.json",
+                    {"status": "running", "phase": phase, "current": 100, "total": 100},
+                )
+                self.assertIsNone(read_status(self.state)["progress"])
+
+    def test_source_or_unknown_size_download_has_no_invented_percentage(self):
+        for sizes in ({}, {"current": 20, "total": 0}):
+            with self.subTest(sizes=sizes):
+                runtime.write_json(
+                    self.state / "status.json",
+                    {"status": "running", "phase": "downloading", **sizes},
+                )
+                self.assertIsNone(read_status(self.state)["progress"])
+
+    def test_only_successful_terminal_job_has_a_completion_percentage(self):
+        for status in ("succeeded", "failed", "cancelled"):
+            with self.subTest(status=status):
+                runtime.write_json(
+                    self.state / "status.json",
+                    {"status": status, "phase": "done", "current": 100, "total": 100},
+                )
+                self.assertEqual(
+                    read_status(self.state)["progress"],
+                    100 if status == "succeeded" else None,
+                )
+
     def test_cancel_kills_only_the_update_command_tree(self):
         worker = Worker(self.work / "job.json")
         marker = self.work / "command-started"
@@ -263,6 +316,8 @@ class ProgressTests(unittest.TestCase):
             {
                 "http_proxy": "http://127.0.0.1:7897",
                 "https_proxy": "http://127.0.0.1:7897",
+                "HTTP_PROXY": "http://127.0.0.1:7897",
+                "HTTPS_PROXY": "http://127.0.0.1:7897",
             },
         ):
             worker = Worker(self.work / "job.json")
