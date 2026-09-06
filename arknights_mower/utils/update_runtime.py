@@ -57,12 +57,12 @@ def write_json(path, value):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(value, stream, ensure_ascii=False)
-        _replace_with_retry(temporary, path)
+        replace_with_retry(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
-def _replace_with_retry(source, destination):
+def replace_with_retry(source, destination):
     """Atomically replace ``destination``, tolerating transient Windows locks.
 
     ``os.replace`` is atomic, but on Windows it fails with a sharing violation
