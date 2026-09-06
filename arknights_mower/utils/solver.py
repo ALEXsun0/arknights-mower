@@ -20,7 +20,6 @@ from arknights_mower.utils.email import send_message
 from arknights_mower.utils.image import cropimg, thres2
 from arknights_mower.utils.log import logger
 from arknights_mower.utils.recognize import RecognizeError, Recognizer, Scene
-from arknights_mower.utils.simulator import restart_simulator
 from arknights_mower.utils.traceback import caller_info
 
 
@@ -47,6 +46,8 @@ class BaseSolver:
         self,
         device: Device | None = None,
         recog: Recognizer | None = None,
+        *,
+        connection_retries: int = 3,
     ) -> None:
         # self.device = device if device is not None else (recog.device if recog is not None else Device())
         if device is None and recog is not None:
@@ -54,11 +55,11 @@ class BaseSolver:
         if device is not None:
             self.device = device
         else:
-            for attempt in range(3):
+            for _ in range(connection_retries):
                 if config.stop_mower.is_set():
                     raise MowerExit
                 try:
-                    self.device = Device(wait_for_device=attempt > 0)
+                    self.device = Device(wait_for_device=connection_retries > 1)
                     self.device.client.check_server_alive()
                     Session().connect(config.conf.adb)
                     if not self.device.check_resolution():
@@ -76,14 +77,9 @@ class BaseSolver:
                     logger.warning(f"设备连接失败：{e}")
                     if config.stop_mower.is_set():
                         raise MowerExit
-                    if attempt < 2:
-                        # 首次初始化失败就恢复模拟器，不受任务结束后的关闭选项影响。
-                        logger.info("设备初始化连接失败，尝试重启模拟器")
-                        if not restart_simulator():
-                            raise ConnectionError("首次任务重启模拟器失败") from e
             else:
                 raise ConnectionError(
-                    "设备初始化失败，重启模拟器 2 次后仍无法连接"
+                    f"设备连接 {connection_retries} 次失败，交由上层重启模拟器"
                 ) from last_exc
 
         self.recog = recog if recog is not None else Recognizer(self.device)

@@ -139,14 +139,56 @@ class TestIdleSimulatorWake(unittest.TestCase):
         self.assertTrue(self.solver._simulator_closed_for_idle)
         self.assertFalse(self.solver.sleeping)
 
-    def test_reconnect_failure_keeps_pending_wake(self):
+    def test_reconnect_failure_does_not_repeat_direct_start(self):
         self.solver.handle_idle_action(600)
         self.solver.device.reconnect.side_effect = ConnectionError("offline")
         with self.assertRaises(ConnectionError):
             self.solver._idle_sleep(0)
         self.solver.recog.update.assert_not_called()
-        self.assertTrue(self.solver._simulator_closed_for_idle)
+        self.assertFalse(self.solver._simulator_closed_for_idle)
+        self.solver._idle_sleep(0)
+        self.assertEqual(
+            self.restart.call_args_list,
+            [call(start=False), call(stop=False, start=True)],
+        )
+        self.solver.device.reconnect.assert_called_once_with()
+        self.solver.recog.update.assert_called_once_with()
         self.assertFalse(self.solver.sleeping)
+
+    def test_each_task_starts_once_and_runtime_recovery_retries_before_restart(self):
+        from arknights_mower.utils.device.device import Device
+
+        device = object.__new__(Device)
+        device.reconnect = self.solver.device.reconnect
+        self.solver.device = device
+        operation = MagicMock()
+        self.actions.attach_mock(operation, "operation")
+        with patch(
+            "arknights_mower.utils.device.device.restart_simulator", self.restart
+        ):
+            for _ in range(2):
+                device.reconnect.side_effect = None
+                self.solver.handle_idle_action(600)
+                self.solver._idle_sleep(0)
+                operation.side_effect = [ConnectionError("offline")] * 3 + [True]
+                device.reconnect.side_effect = [ConnectionError("offline")] * 3 + [None]
+                self.assertTrue(device.recover(operation))
+                self.solver._idle_sleep(0)
+                self.assertFalse(self.solver._simulator_closed_for_idle)
+        self.assertEqual(
+            self.actions.mock_calls,
+            (
+                [
+                    call.simulator(start=False),
+                    call.simulator(stop=False, start=True),
+                    call.reconnect(),
+                    call.update(),
+                ]
+                + [call.operation(), call.reconnect()] * 3
+                + [call.simulator(), call.reconnect(), call.operation(), call.update()]
+            )
+            * 2,
+        )
 
 
 class TestInitialSimulatorRecovery(unittest.TestCase):
@@ -154,6 +196,7 @@ class TestInitialSimulatorRecovery(unittest.TestCase):
         import arknights_mower.__main__ as main
 
         self.main = main
+        self.original_initialize = main.initialize
         self.stop = Event()
         self.enterContext(patch.object(base_schedule.config, "stop_mower", self.stop))
         self.enterContext(
@@ -165,7 +208,7 @@ class TestInitialSimulatorRecovery(unittest.TestCase):
             patch.object(main, "restart_simulator", return_value=True)
         )
 
-    def test_outer_startup_restarts_immediately_regardless_of_idle_option(self):
+    def test_outer_recovery_is_not_gated_by_idle_option(self):
         for close_when_idle in (False, True):
             with (
                 self.subTest(close_when_idle=close_when_idle),
@@ -185,15 +228,185 @@ class TestInitialSimulatorRecovery(unittest.TestCase):
                 self.main.simulate(None)
                 self.assertEqual(
                     actions.mock_calls,
-                    [call.initialize([]), call.restart(), call.initialize([])],
+                    ([call.restart(stop=False, start=True)] if close_when_idle else [])
+                    + [
+                        call.initialize(
+                            [], connection_retries=3 if close_when_idle else 1
+                        ),
+                        call.restart(),
+                        call.initialize([], connection_retries=3),
+                    ],
                 )
+
+    def use_real_connection_retries(self, failures):
+        from arknights_mower.utils.solver import BaseSolver
+
+        self.enterContext(
+            patch.object(base_schedule.config.conf.droidcast, "enable", False)
+        )
+        self.enterContext(
+            patch.object(base_schedule.config.conf, "touch_method", "scrcpy")
+        )
+        self.enterContext(patch("arknights_mower.utils.solver.Session"))
+        self.enterContext(patch("arknights_mower.utils.solver.Scrcpy"))
+        self.enterContext(patch("arknights_mower.utils.solver.Recognizer"))
+        device = MagicMock()
+        device_factory = self.enterContext(patch("arknights_mower.utils.solver.Device"))
+        device_factory.side_effect = [ConnectionError("offline")] * failures + [device]
+
+        def initialize(tasks, *, connection_retries=3):
+            solver = BaseSolver(connection_retries=connection_retries)
+            scheduler = MagicMock(device=solver.device)
+            # 连接成功后在排班校验处结束，避免执行真实任务。
+            scheduler.initialize_operators.return_value = "测试已完成连接验证"
+            return scheduler
+
+        self.initialize.side_effect = initialize
+        actions = MagicMock()
+        actions.attach_mock(device_factory, "device")
+        actions.attach_mock(self.restart, "simulator")
+        return actions
+
+    def test_initialize_propagates_first_and_later_retry_limits_to_device(self):
+        for retries in (1, 3):
+            with (
+                self.subTest(retries=retries),
+                patch(
+                    "arknights_mower.utils.solver.Device",
+                    side_effect=ConnectionError("offline"),
+                ) as device,
+            ):
+                with self.assertRaisesRegex(
+                    ConnectionError, f"设备连接 {retries} 次失败"
+                ):
+                    self.original_initialize([], connection_retries=retries)
+                self.assertEqual(
+                    device.call_args_list,
+                    [call(wait_for_device=retries > 1)] * retries,
+                )
+
+    def test_checked_option_starts_before_any_device_connection(self):
+        actions = self.use_real_connection_retries(failures=0)
+        with patch.object(base_schedule.config.conf, "close_simulator_when_idle", True):
+            self.main.simulate(None)
+        self.assertEqual(
+            actions.mock_calls,
+            [call.simulator(stop=False, start=True), call.device(wait_for_device=True)],
+        )
+
+    def test_unchecked_option_restarts_immediately_after_first_connection_failure(self):
+        actions = self.use_real_connection_retries(failures=1)
+        self.main.simulate(None)
+        self.assertEqual(
+            actions.mock_calls,
+            [
+                call.device(wait_for_device=False),
+                call.simulator(),
+                call.device(wait_for_device=True),
+            ],
+        )
+
+    def test_unchecked_option_later_failures_retry_three_times_before_restart(self):
+        actions = self.use_real_connection_retries(failures=4)
+        self.main.simulate(None)
+        self.assertEqual(
+            actions.mock_calls,
+            [call.device(wait_for_device=False), call.simulator()]
+            + [call.device(wait_for_device=True)] * 3
+            + [call.simulator(), call.device(wait_for_device=True)],
+        )
+
+    def test_unchecked_option_connects_to_running_device_without_start(self):
+        actions = self.use_real_connection_retries(failures=0)
+        self.main.simulate(None)
+        self.assertEqual(actions.mock_calls, [call.device(wait_for_device=False)])
+
+    def test_unchecked_option_after_success_always_retries_three_times(self):
+        from arknights_mower.utils.device.device import Device
+
+        actions = self.use_real_connection_retries(failures=0)
+        self.main.simulate(None)
+        device = self.main.base_scheduler.device
+        device._safe_reconnect = lambda: Device._safe_reconnect(device)
+        operation = MagicMock()
+        actions.attach_mock(operation, "operation")
+        actions.attach_mock(device.reconnect, "reconnect")
+        with patch(
+            "arknights_mower.utils.device.device.restart_simulator", self.restart
+        ):
+            for _ in range(2):
+                operation.side_effect = [ConnectionError("offline")] * 3 + [True]
+                device.reconnect.side_effect = [ConnectionError("offline")] * 3 + [None]
+                self.assertTrue(Device.recover(device, operation))
+        self.assertEqual(
+            actions.mock_calls,
+            [call.device(wait_for_device=False)]
+            + (
+                [call.operation(), call.reconnect()] * 3
+                + [call.simulator(), call.reconnect(), call.operation()]
+            )
+            * 2,
+        )
+
+    def test_unchecked_option_later_transient_failure_does_not_restart_again(self):
+        actions = self.use_real_connection_retries(failures=2)
+        self.main.simulate(None)
+        self.assertEqual(
+            actions.mock_calls,
+            [call.device(wait_for_device=False), call.simulator()]
+            + [call.device(wait_for_device=True)] * 2,
+        )
+
+    def test_checked_option_restarts_after_three_failures_without_duplicate_start(self):
+        actions = self.use_real_connection_retries(failures=3)
+        with patch.object(base_schedule.config.conf, "close_simulator_when_idle", True):
+            self.main.simulate(None)
+        self.assertEqual(
+            actions.mock_calls,
+            [call.simulator(stop=False, start=True)]
+            + [call.device(wait_for_device=True)] * 3
+            + [call.simulator(), call.device(wait_for_device=True)],
+        )
+
+    def test_persistent_connection_failure_keeps_first_and_later_retry_limits(self):
+        actions = self.use_real_connection_retries(failures=7)
+        with self.assertRaisesRegex(ConnectionError, "设备连接 3 次失败"):
+            self.main.simulate(None)
+        self.assertEqual(
+            actions.mock_calls,
+            [call.device(wait_for_device=False), call.simulator()]
+            + [call.device(wait_for_device=True)] * 3
+            + [call.simulator()]
+            + [call.device(wait_for_device=True)] * 3,
+        )
+
+    def test_failed_direct_start_does_not_initialize_device(self):
+        self.restart.return_value = False
+        with patch.object(base_schedule.config.conf, "close_simulator_when_idle", True):
+            with self.assertRaisesRegex(ConnectionError, "任务开始前启动模拟器失败"):
+                self.main.simulate(None)
+        self.restart.assert_called_once_with(stop=False, start=True)
+        self.initialize.assert_not_called()
+
+    def test_stopped_task_does_not_start_or_initialize(self):
+        self.stop.set()
+        with patch.object(base_schedule.config.conf, "close_simulator_when_idle", True):
+            self.main.simulate(None)
+        self.restart.assert_not_called()
+        self.initialize.assert_not_called()
+
+    def test_stop_during_direct_start_does_not_initialize(self):
+        self.restart.side_effect = base_schedule.MowerExit
+        with patch.object(base_schedule.config.conf, "close_simulator_when_idle", True):
+            self.main.simulate(None)
+        self.initialize.assert_not_called()
 
     def test_failed_restart_does_not_continue_initialization(self):
         self.initialize.side_effect = ConnectionError("no device")
         self.restart.return_value = False
         with self.assertRaisesRegex(ConnectionError, "首次初始化重启模拟器失败"):
             self.main.simulate(None)
-        self.initialize.assert_called_once_with([])
+        self.initialize.assert_called_once_with([], connection_retries=1)
         self.restart.assert_called_once_with()
 
     def test_previous_scheduler_is_not_reconnected_after_failed_initialization(self):
@@ -215,13 +428,13 @@ class TestInitialSimulatorRecovery(unittest.TestCase):
         self.assertEqual(self.restart.call_count, 2)
 
     def test_stop_during_initialization_does_not_restart(self):
-        def fail_and_stop(tasks):
+        def fail_and_stop(tasks, **kwargs):
             self.stop.set()
             raise ConnectionError("no device")
 
         self.initialize.side_effect = fail_and_stop
         self.main.simulate(None)
-        self.initialize.assert_called_once_with([])
+        self.initialize.assert_called_once_with([], connection_retries=1)
         self.restart.assert_not_called()
 
 
