@@ -247,7 +247,7 @@ rp._active_resource = None
 rp._loaded_resource_signature = None
 def report():
     path = rp.resource_pkg_path(rp._RESOURCE_MARKER)
-    print('RESOURCE_TEST ' + json.dumps({{'version': json.loads(path.read_text())['res_version'], 'path': str(path)}}), flush=True)
+    print('RESOURCE_TEST ' + json.dumps({{'version': json.loads(path.read_text(encoding='utf-8'))['res_version'], 'path': str(path)}}), flush=True)
 with rp.resource_task_session():
     report()
     for command in sys.stdin:
@@ -261,11 +261,16 @@ with rp.resource_task_session():
                 (self.base / f"child{i}").mkdir()
                 process = subprocess.Popen(
                     [sys.executable, "-c", script],
-                    env=dict(os.environ, MOWER_DATA_DIR=str(self.base / f"child{i}")),
+                    env=dict(
+                        os.environ,
+                        MOWER_DATA_DIR=str(self.base / f"child{i}"),
+                        PYTHONIOENCODING="utf-8",
+                    ),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
                 )
                 replies = queue.Queue()
                 logs = []

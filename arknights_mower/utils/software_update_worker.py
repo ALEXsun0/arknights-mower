@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 if __package__:
     from .github_download import download_url
     from .update_runtime import (
+        InstanceScanError,
         detached_options,
         instances,
         launch_environment,
@@ -32,11 +33,13 @@ if __package__:
         read_json,
         registration_key,
         submission_lock,
+        utf8_output,
         write_json,
     )
 else:
     from github_download import download_url
     from update_runtime import (
+        InstanceScanError,
         detached_options,
         instances,
         launch_environment,
@@ -44,6 +47,7 @@ else:
         read_json,
         registration_key,
         submission_lock,
+        utf8_output,
         write_json,
     )
 
@@ -938,11 +942,14 @@ class Worker:
         }
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            ready = {
-                registration_key(r)
-                for r in instances(self.state)
-                if r.get("ready") and r.get("restart_job") == self.job["id"]
-            }
+            try:
+                ready = {
+                    registration_key(r)
+                    for r in instances(self.state, timeout=0)
+                    if r.get("ready") and r.get("restart_job") == self.job["id"]
+                }
+            except InstanceScanError:
+                ready = set()  # Retry within the existing readiness deadline.
             if requested <= ready:
                 return
             if any(p.poll() is not None for p in processes):
@@ -1113,18 +1120,7 @@ class Worker:
 
 
 def main(job_path):
-    # Windowed PyInstaller applications may set stdout/stderr to None.
-    if sys.stdout is None or sys.stderr is None:
-        original_streams = sys.stdout, sys.stderr
-        with (Path(job_path).parent / "update.log").open(
-            "a", encoding="utf-8", buffering=1
-        ) as log:
-            try:
-                sys.stdout = sys.stderr = log
-                Worker(job_path).execute()
-            finally:
-                sys.stdout, sys.stderr = original_streams
-    else:
+    with utf8_output(Path(job_path).parent / "update.log"):
         Worker(job_path).execute()
 
 

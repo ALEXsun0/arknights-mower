@@ -23,7 +23,10 @@ def current_instance():
 
 
 def info():
-    record = current_instance()
+    try:
+        record = current_instance()
+    except runtime.InstanceScanError as exc:
+        return {"ok": True, "supported": False, "name": "", "message": str(exc)}
     return {
         "ok": True,
         "supported": record is not None,
@@ -160,11 +163,15 @@ def execute(job_path):
         # differs from the registered os.getpid().
         target = runtime.registration_key(record)
         while time.monotonic() < deadline:
+            try:
+                records = runtime.instances(state, timeout=0)
+            except runtime.InstanceScanError:
+                records = []  # A transient read failure is not a failed restart.
             if any(
                 runtime.registration_key(item) == target
                 and item.get("ready")
                 and item.get("restart_job") == job["id"]
-                for item in runtime.instances(state)
+                for item in records
             ):
                 report("当前实例已重启，原运行状态将自动恢复", "succeeded")
                 return
@@ -182,4 +189,5 @@ def execute(job_path):
 
 
 def worker_main(job_path):
-    execute(job_path)
+    with runtime.utf8_output(Path(job_path).parent / "process.log"):
+        execute(job_path)

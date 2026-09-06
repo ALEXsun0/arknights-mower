@@ -61,9 +61,9 @@ def package_file_paths(root) -> list:
 def content_hash(root, rels) -> str:
     """对相对路径文件集算聚合 sha256（含路径，结果与顺序无关）。
 
-    Windows 检出（core.autocrlf）会把文本文件的 LF 转成 CRLF。明确判定为文本的
-    文件（见 _TEXT_SUFFIXES）归一化到 LF，使摘要在任何检出下与打包内容一致；
-    二进制文件一律按原始字节参与。分块读取避免一次载入整文件。
+    Windows 检出（core.autocrlf）会把文本文件的 LF 转成 CRLF。仅对
+    RES_PACKAGE_DATA 声明的文本资源归一化到 LF；模型、图片及其他文件均按
+    原字节参与，不通过 NUL 字节猜测文件类型。分块读取避免一次载入整文件。
     """
     root = Path(root)
     digest = hashlib.sha256()
@@ -71,33 +71,9 @@ def content_hash(root, rels) -> str:
         digest.update(rel.as_posix().encode("utf-8"))
         digest.update(b"\0")
         with open(root / rel, "rb") as f:
-            _update_digest(digest, f, _is_text(rel))
+            normalize = rel.as_posix() in RES_PACKAGE_DATA
+            _update_digest(digest, f, normalize)
     return digest.hexdigest()
-
-
-# 文本后缀：仅这些类型会在 Git 检出时把 LF 转成 CRLF，才值得归一化。二进制文件
-# 一律按原始字节参与——仅凭「无 NUL 字节」误判为文本，会让两份内容不同的二进制
-# 样例被换行归一化后得到相同摘要。
-_TEXT_SUFFIXES = frozenset(
-    {
-        ".json",
-        ".txt",
-        ".js",
-        ".jsx",
-        ".ts",
-        ".tsx",
-        ".css",
-        ".html",
-        ".md",
-        ".yaml",
-        ".yml",
-    }
-)
-
-
-def _is_text(rel) -> bool:
-    """Whether ``rel`` names a text file whose line endings Git may rewrite."""
-    return Path(rel).suffix.lower() in _TEXT_SUFFIXES
 
 
 def _update_digest(digest, stream, normalize: bool) -> None:

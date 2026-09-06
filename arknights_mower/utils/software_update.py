@@ -541,11 +541,18 @@ def info():
         blockers.append(
             "安装位置不可写；请先将程序移至可写目录（macOS 请移出 DMG 后运行）"
         )
-    registered = runtime.instances()
-    if not any(r["pid"] == os.getpid() and r["kind"] == "instance" for r in registered):
-        blockers.append(
-            "请通过 webview_ui.py / Mower 桌面程序启动；直接运行 Flask 或容器请使用原部署工具更新"
-        )
+    try:
+        registered = runtime.instances()
+    except runtime.InstanceScanError as exc:
+        registered = []
+        blockers.append(str(exc))
+    else:
+        if not any(
+            r["pid"] == os.getpid() and r["kind"] == "instance" for r in registered
+        ):
+            blockers.append(
+                "请通过 webview_ui.py / Mower 桌面程序启动；直接运行 Flask 或容器请使用原部署工具更新"
+            )
     settings = get_settings()
     return {
         "ok": True,

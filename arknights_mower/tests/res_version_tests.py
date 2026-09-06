@@ -126,9 +126,35 @@ class TestContentHash(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             content_hash(self.dir, [Path("nope.bin")])
 
-    def test_文本后缀按换行归一化(self):
-        # 文本类型（.json）在任何检出下 LF/CRLF 应得到同一摘要，Windows/CI 一致
-        rel = Path("data.json")
+    def test_declared_text_normalizes_crlf_across_chunk_boundary(self):
+        rel = Path(RES_PACKAGE_DATA[0])
+        path = self.dir / rel
+        path.parent.mkdir(parents=True)
+        crlf = b"x" * ((1 << 20) - 1) + b"\r\nnext\r\nlast\r"
+        path.write_bytes(crlf)
+        windows_hash = content_hash(self.dir, [rel])
+        path.write_bytes(crlf.replace(b"\r\n", b"\n"))
+        self.assertEqual(windows_hash, content_hash(self.dir, [rel]))
+
+    def test_binary_without_nul_and_undeclared_text_keep_exact_bytes(self):
+        for name in (
+            RES_PACKAGE_MODELS[0],
+            "ui/public/avatar/test.webp",
+            "unknown.json",
+        ):
+            with self.subTest(name=name):
+                rel = Path(name)
+                path = self.dir / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"\x01\r\n\x02")
+                original = content_hash(self.dir, [rel])
+                path.write_bytes(b"\x01\n\x02")
+                self.assertNotEqual(original, content_hash(self.dir, [rel]))
+
+    def test_声明的文本资源按换行归一化(self):
+        # 声明的文本资源在 LF/CRLF 检出下应得到同一摘要。
+        rel = Path(RES_PACKAGE_DATA[0])
+        (self.dir / rel).parent.mkdir(parents=True, exist_ok=True)
         (self.dir / rel).write_bytes(b'{"a":1}\r\n{"b":2}\r\n')
         h_crlf = content_hash(self.dir, [rel])
         (self.dir / rel).write_bytes(b'{"a":1}\n{"b":2}\n')

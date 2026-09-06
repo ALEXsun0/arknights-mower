@@ -168,33 +168,63 @@ def registration_key(record):
     return (record.get("space") or "", record.get("name") or "", record.get("port"))
 
 
-def instances(directory=None):
-    directory = Path(directory or state_dir())
-    result = []
-    for path in (directory / "instances").glob("*.json"):
+class InstanceScanError(RuntimeError):
+    """A complete registration snapshot could not be read safely."""
+
+
+def instances(directory=None, *, timeout=5, strict=True):
+    """Read registrations without treating an unreadable file as a dead process.
+
+    The entire scan shares one retry budget. Update admission and shutdown need
+    a complete snapshot; tray rendering can explicitly request a best-effort one.
+    """
+    directory = Path(directory or state_dir()) / "instances"
+    deadline = time.monotonic() + timeout
+    while True:
+        result = []
+        failures = []
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except OSError:
-            # A concurrent writer may be mid-replace (see replace_with_retry);
-            # a transient read failure must not be mistaken for a stale record,
-            # or a live instance's registration would be deleted.
-            continue
-        except ValueError:
-            # Unparsable JSON is never a live registration (its heartbeat
-            # rewrites valid JSON every second), so treat it as stale.
-            record = {}
-        if record and process_alive(record.get("pid")):
-            result.append(record)
-        else:
-            path.unlink(missing_ok=True)
-    return result
+            paths = sorted(p for p in directory.iterdir() if p.suffix == ".json")
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            paths = []
+            failures.append((directory, exc))
+        for path in paths:
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(record, dict)
+                    or type(record.get("pid")) is not int
+                    or record["pid"] <= 0
+                ):
+                    raise ValueError("实例登记缺少有效的进程编号")
+                if process_alive(record["pid"]):
+                    result.append(record)
+                else:
+                    path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass  # The instance may have removed its registration on exit.
+            except (OSError, ValueError) as exc:
+                failures.append((path, exc))
+        if not failures:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if not strict:
+                return result
+            path, error = failures[0]
+            raise InstanceScanError(
+                f"无法完整读取实例登记，请稍后重试或检查文件权限：{path}（{error}）"
+            ) from error
+        time.sleep(min(0.05, remaining))
 
 
 def managed_instances(directory=None, data_dir=None):
     data_dir = os.environ.get("MOWER_DATA_DIR", "") if data_dir is None else data_dir
     return [
         record
-        for record in instances(directory)
+        for record in instances(directory, timeout=0, strict=False)
         if record.get("kind") == "instance"
         and record.get("managed")
         and record.get("data_dir", "") == data_dir
@@ -205,7 +235,7 @@ def unified_managers(directory=None, data_dir=None):
     data_dir = os.environ.get("MOWER_DATA_DIR", "") if data_dir is None else data_dir
     return [
         record
-        for record in instances(directory)
+        for record in instances(directory, timeout=0, strict=False)
         if record.get("kind") == "manager"
         and record.get("unified_tray")
         and record.get("data_dir", "") == data_dir
@@ -311,26 +341,28 @@ def launch_environment(record, job_id="", background=False):
     # A frozen child must initialize its own bootloader/runtime, including after
     # replacement of the bundle. System subprocesses must not inherit private libs.
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    # Set these before starting source Python children. Frozen workers also
+    # configure their streams explicitly, since bootloaders may ignore them.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     for name in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
         if name + "_ORIG" in env:
             env[name] = env[name + "_ORIG"]
         else:
             env.pop(name, None)
     # os._Environ normalizes variable names to uppercase on Windows, so a plain
-    # copy can change the casing of proxy variables. Prefer the lowercase value
-    # (requests reads lowercase first) and drop any uppercase duplicate, so a
-    # child starts with exactly one deterministic value on every platform.
+    # copy can change the casing of proxy variables. Normalize them to lowercase
+    # so subprocesses and callers see a deterministic environment on every platform.
     for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
-        lower = env.pop(name, None)
-        upper = env.pop(name.upper(), None)
-        value = lower if lower is not None else upper
-        if value is not None:
+        matches = [key for key in env if key.lower() == name]
+        if matches:
+            # requests/urllib prefer the exact lowercase spelling, even when
+            # its value is empty. Never let insertion order overwrite it.
+            key = name if name in env else name.upper()
+            value = env[key] if key in env else env[sorted(matches)[0]]
+            for key in matches:
+                del env[key]
             env[name] = value
-    # A child's stdout is captured into logs that are always decoded as UTF-8
-    # (for example update/restart log). Pin its stdio encoding regardless of the
-    # console codepage (Chinese Windows defaults to GBK) so those logs do not
-    # come back garbled.
-    env["PYTHONIOENCODING"] = "utf-8"
     env.update(
         MOWER_RESTART_JOB=job_id,
         MOWER_BACKGROUND="1" if background else "0",
@@ -343,3 +375,23 @@ def launch_environment(record, job_id="", background=False):
     else:
         env.pop("MOWER_DATA_DIR", None)
     return env
+
+
+@contextmanager
+def utf8_output(log_path):
+    """Use UTF-8 for worker logs, including windowed/frozen standard streams."""
+    original = sys.stdout, sys.stderr
+    log = None
+    try:
+        if any(stream is None for stream in original):
+            log = Path(log_path).open("a", encoding="utf-8", buffering=1)
+        for name, stream in zip(("stdout", "stderr"), original):
+            if stream is None:
+                setattr(sys, name, log)
+            elif hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        yield
+    finally:
+        sys.stdout, sys.stderr = original
+        if log is not None:
+            log.close()
