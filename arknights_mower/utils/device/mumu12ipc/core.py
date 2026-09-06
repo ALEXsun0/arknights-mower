@@ -3,6 +3,7 @@
 # It only binds to the public C API exposed by external_renderer_ipc.dll.
 
 import ctypes
+import functools
 import json
 import os
 import re
@@ -15,6 +16,70 @@ import numpy as np
 from arknights_mower.utils import config
 from arknights_mower.utils.csleep import MowerExit
 from arknights_mower.utils.log import logger
+from arknights_mower.utils.simulator import restart_simulator
+
+
+def retry_wrapper(max_retries: int = 3, delay: float = 0.5):
+    """
+    通用重试装饰器（适配 @retry_wrapper(3) 用法）
+    - 捕获异常 -> 重置连接状态 -> 尝试重启模拟器 -> 睡眠 -> 重试
+    - 命中 MowerExit 直接向上抛出，避免吞掉退出信号
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            last_exc = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(self, *args, **kwargs)
+                except MowerExit:
+                    raise
+                except RuntimeError as e:
+                    last_exc = e
+                    logger.info(
+                        f"{func.__name__} runtime error (attempt {attempt}/{max_retries}): {e}"
+                    )
+                    try:
+                        # 若有该方法则调用
+                        if hasattr(self, "device") and hasattr(
+                            self.device, "check_current_focus"
+                        ):
+                            self.device.check_current_focus()
+                    except Exception as inner:
+                        logger.info(f"check_current_focus failed: {inner}")
+                except Exception as e:
+                    last_exc = e
+                    logger.info(
+                        f"{func.__name__} failed (attempt {attempt}/{max_retries}): {e}"
+                    )
+                    # 瞬时错误：重置 IPC 状态 + 重连，不杀游戏/不重启模拟器
+                    try:
+                        if hasattr(self, "_conn"):
+                            self._conn = 0
+                        if hasattr(self, "_display_id"):
+                            self._display_id = -1
+                        if hasattr(self, "device") and hasattr(
+                            self.device, "reconnect"
+                        ):
+                            self.device.reconnect()
+                    except Exception as inner:
+                        logger.error(f"reconnect failed: {inner}")
+                time.sleep(delay)
+            # 重试耗尽且设备无法连接时自动重启模拟器，再试最后一次
+            if last_exc is not None:
+                logger.warning(
+                    f"{func.__name__} 重试 {max_retries} 次仍失败，判定设备无法连接，自动重启模拟器"
+                )
+                restart_simulator()
+                if hasattr(self, "device") and hasattr(self.device, "reconnect"):
+                    self.device.reconnect()
+                return func(self, *args, **kwargs)
+            raise RuntimeError(f"{func.__name__} failed after {max_retries} retries")
+
+        return wrapper
+
+    return decorator
 
 
 class MuMuIpcError(RuntimeError):
@@ -273,15 +338,6 @@ class MuMu12IPC:
             raise Exception("连接模拟器失败，请启动模拟器")
         logger.info("MuMu IPC connected.")
 
-    def close(self):
-        """释放当前 IPC 连接，下一次完整设备连接会重新创建它。"""
-        try:
-            if self._conn:
-                self._dll.nemu_disconnect(self._conn)
-        finally:
-            self._conn = 0
-            self._display_id = -1
-
     def get_display_id(self):
         """
         Bind to target app display using package name from config.
@@ -294,9 +350,10 @@ class MuMu12IPC:
             raise RuntimeError("获取Display ID失败")
         logger.debug(f"Display bound: id={self._display_id}")
 
+    @retry_wrapper(3)  # type: ignore
     def _ensure_ready(self):
         """
-        Check connection and display once; Device owns recovery attempts.
+        Ensure connection and display id are valid; auto-recover if needed.
         """
         if self._conn == 0:
             self.connect()
@@ -333,12 +390,12 @@ class MuMu12IPC:
                 (self._H, self._W, 4)
             )[:, :, :3]
             return np.flipud(frame)
-        except MowerExit:
-            raise
         except Exception as e:
             logger.error(f"capture_display error: {e}")
-            self.close()
-            raise
+            # Attempt soft recovery for next call
+            self._conn = 0
+            self._display_id = -1
+            return np.zeros((self._H, self._W, 3), dtype=np.uint8)
 
     def _map_xy(self, x: int, y: int) -> tuple[int, int]:
         """
@@ -358,12 +415,10 @@ class MuMu12IPC:
             )
             if rc != 0:
                 raise MuMuIpcError(f"key_down failed: {rc}")
-        except MowerExit:
-            raise
         except Exception as e:
             logger.error(f"key_down error: {e}")
-            self.close()
-            raise
+            self._conn = 0
+            self._display_id = -1
 
     def key_up(self, key_code: int):
         try:
@@ -373,12 +428,10 @@ class MuMu12IPC:
             )
             if rc != 0:
                 raise MuMuIpcError(f"key_up failed: {rc}")
-        except MowerExit:
-            raise
         except Exception as e:
             logger.error(f"key_up error: {e}")
-            self.close()
-            raise
+            self._conn = 0
+            self._display_id = -1
 
     def touch_down(self, x: int, y: int):
         try:
@@ -389,12 +442,10 @@ class MuMu12IPC:
             )
             if rc != 0:
                 raise MuMuIpcError(f"touch_down failed: {rc}")
-        except MowerExit:
-            raise
         except Exception as e:
             logger.error(f"touch_down error: {e}")
-            self.close()
-            raise
+            self._conn = 0
+            self._display_id = -1
 
     def touch_up(self):
         try:
@@ -402,12 +453,10 @@ class MuMu12IPC:
             rc = self._dll.nemu_input_event_touch_up(self._conn, self._display_id)
             if rc != 0:
                 raise MuMuIpcError(f"touch_up failed: {rc}")
-        except MowerExit:
-            raise
         except Exception as e:
             logger.error(f"touch_up error: {e}")
-            self.close()
-            raise
+            self._conn = 0
+            self._display_id = -1
 
     def finger_touch_down(self, finger_id: int, x: int, y: int):
         try:
@@ -418,12 +467,10 @@ class MuMu12IPC:
             )
             if rc != 0:
                 raise MuMuIpcError(f"finger_touch_down failed: {rc}")
-        except MowerExit:
-            raise
         except Exception as e:
             logger.error(f"finger_touch_down error: {e}")
-            self.close()
-            raise
+            self._conn = 0
+            self._display_id = -1
 
     def finger_touch_up(self, finger_id: int):
         try:
@@ -433,12 +480,10 @@ class MuMu12IPC:
             )
             if rc != 0:
                 raise MuMuIpcError(f"finger_touch_up failed: {rc}")
-        except MowerExit:
-            raise
         except Exception as e:
             logger.error(f"finger_touch_up error: {e}")
-            self.close()
-            raise
+            self._conn = 0
+            self._display_id = -1
 
     def tap(self, x: int, y: int, hold_time: float = 0.07):
         self.touch_down(x, y)

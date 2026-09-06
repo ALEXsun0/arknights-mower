@@ -26,6 +26,7 @@ from arknights_mower.utils.device.scrcpy import Scrcpy
 from arknights_mower.utils.image import bytes2img, img2bytes
 from arknights_mower.utils.log import logger, save_screenshot
 from arknights_mower.utils.network import get_new_port, is_port_in_use
+from arknights_mower.utils.simulator import restart_simulator
 
 
 class Device:
@@ -170,15 +171,16 @@ class Device:
 
     def _stop_control(self):
         control = getattr(self, "control", None)
-        self.control = None
         if control is None:
             return
-        for service, close in ((control.scrcpy, "stop"), (control.mumu12IPC, "close")):
-            if service is not None:
-                try:
-                    getattr(service, close)()
-                except Exception:
-                    logger.debug("释放设备控制连接失败", exc_info=True)
+        # IPC 沿用原有连接生命周期；通用 ADB 重连不释放或替换它。
+        if control.mumu12IPC is None:
+            self.control = None
+        if control.scrcpy is not None:
+            try:
+                control.scrcpy.stop()
+            except Exception:
+                logger.debug("关闭 scrcpy 失败", exc_info=True)
 
     def _connect_once(self, *, wait_for_device: bool = True) -> None:
         """一次完整连接：先确认 ADB 在线，再初始化截图和触控，各执行一次。"""
@@ -194,14 +196,11 @@ class Device:
                 self.device_id = self.client.device_id
                 if not self.check_resolution():
                     raise MowerExit
-                if config.conf.droidcast.enable and not config.conf.mumu12IPC:
+                if config.conf.droidcast.enable:
                     if not self.start_droidcast():
                         raise ConnectionError("DroidCast启动失败")
-                self.control = Device.Control(self, self.client)
-                if self.control.mumu12IPC is not None:
-                    # IPC 需要游戏显示窗口；保留原有拉起/切回游戏的行为，不嵌套恢复循环。
-                    self.check_current_focus()
-                    self.control.mumu12IPC._ensure_ready()
+                if self.control is None:
+                    self.control = Device.Control(self, self.client)
             except Exception:
                 self.close()
                 raise
@@ -378,9 +377,23 @@ class Device:
             time.sleep(delta)
             start_time = min_time
 
-        if config.conf.mumu12IPC:
-            img = self.recover(lambda: self.control.mumu12IPC.capture_display())
-            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        if self.control.mumu12IPC:
+            # 瞬时错误重建 IPC 重试；重试耗尽且设备无法连接时自动重启模拟器
+            for _ in range(3):
+                try:
+                    img = self.control.mumu12IPC.capture_display()
+                    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+                    break
+                except MowerExit:
+                    raise
+                except Exception as e:
+                    logger.exception(e)
+                    self.control.mumu12IPC = MuMu12IPC(self.device)
+            else:
+                restart_simulator()
+                self.control.mumu12IPC = MuMu12IPC(self.device)
+                img = self.control.mumu12IPC.capture_display()
+                gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         elif config.conf.droidcast.enable:
             session = config.droidcast.session
 
@@ -458,14 +471,20 @@ class Device:
     def tap(self, point: tuple[int, int]) -> None:
         """tap"""
         logger.debug(f"tap: {point}")
-        self.recover(lambda: self.control.tap(point))
+        if self.control is not None and self.control.mumu12IPC:
+            self.control.tap(point)
+        else:
+            self.recover(lambda: self.control.tap(point))
 
     def swipe(
         self, start: tuple[int, int], end: tuple[int, int], duration: int = 100
     ) -> None:
         """swipe"""
         logger.debug(f"swipe: {start} -> {end}, duration={duration}")
-        self.recover(lambda: self.control.swipe(start, end, duration))
+        if self.control is not None and self.control.mumu12IPC:
+            self.control.swipe(start, end, duration)
+        else:
+            self.recover(lambda: self.control.swipe(start, end, duration))
 
     def swipe_ext(
         self, points: list[tuple[int, int]], durations: list[int], up_wait: int = 200
@@ -474,7 +493,10 @@ class Device:
         logger.debug(
             f"swipe_ext: points={points}, durations={durations}, up_wait={up_wait}"
         )
-        self.recover(lambda: self.control.swipe_ext(points, durations, up_wait))
+        if self.control is not None and self.control.mumu12IPC:
+            self.control.swipe_ext(points, durations, up_wait)
+        else:
+            self.recover(lambda: self.control.swipe_ext(points, durations, up_wait))
 
     def close(self) -> None:
         """释放 adb 相关资源（常驻子进程与 socket）。

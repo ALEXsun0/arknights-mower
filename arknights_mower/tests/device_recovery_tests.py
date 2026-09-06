@@ -8,7 +8,6 @@ from arknights_mower.utils import config
 from arknights_mower.utils.csleep import MowerExit
 from arknights_mower.utils.device.adb_client.core import Client as ADBClient
 from arknights_mower.utils.device.device import Device
-from arknights_mower.utils.device.mumu12ipc.core import MuMu12IPC, MuMuIpcError
 from arknights_mower.utils.device.recovery import (
     DeviceRecoveryError,
     recover_connection,
@@ -245,13 +244,13 @@ class TestDeviceConnectionChain(unittest.TestCase):
         device = disconnected_device()
         device.client = ADBClient(adb_bin="adb", wait_for_device=False)
         old_control = MagicMock()
+        old_control.mumu12IPC = None
         device.control = old_control
         self.session.devices_list.return_value = [(self.TARGET, "offline")]
         with self.assertRaises(DeviceRecoveryError):
             device.reconnect(restarts=0)
         self.assertIsNone(device.control)
         old_control.scrcpy.stop.assert_called_once_with()
-        old_control.mumu12IPC.close.assert_called_once_with()
         self.push.assert_not_called()
         self.server.assert_not_called()
         self.restart.assert_not_called()
@@ -357,72 +356,47 @@ class TestDeviceConnectionChain(unittest.TestCase):
         self.push.assert_not_called()
         self.restart.assert_not_called()
 
-    def test_ipc_bootstrap_focus_failure_does_not_nest_recovery(self):
+    def test_ipc_stays_lazy_and_adb_reconnect_preserves_its_instance(self):
         with (
             patch.object(config.conf, "mumu12IPC", True),
             patch("arknights_mower.utils.device.device.MuMu12IPC") as ipc,
-            patch.object(
-                ADBClient, "run", side_effect=ConnectionError("closed")
-            ) as run,
+            patch.object(Device, "check_current_focus") as focus,
         ):
-            with self.assertRaises(DeviceRecoveryError):
-                disconnected_device().reconnect(restarts=0)
-        self.assertEqual(run.call_count, 3)
-        self.assertEqual(ipc.call_count, 3)
-        self.assertEqual(ipc.return_value.close.call_count, 3)
-        ipc.return_value._ensure_ready.assert_not_called()
+            device = Device(wait_for_device=False)
+            self.addCleanup(device.close)
+            original_control = device.control
+            device.reconnect(restarts=0)
+            device.close()
+            self.assertIs(device.control, original_control)
+            self.assertIs(device.control.mumu12IPC, ipc.return_value)
+            ipc.assert_called_once_with(device)
+            self.assertEqual(ipc.return_value.mock_calls, [])
+            focus.assert_not_called()
         self.push.assert_not_called()
         self.restart.assert_not_called()
 
-    def test_ipc_connection_requires_display_ready_after_focus(self):
-        focus = f"mCurrentFocus=Window{{id {config.conf.APPNAME}/Main}}".encode()
+    def test_ipc_inputs_keep_their_existing_recovery(self):
+        device = disconnected_device()
         with (
             patch.object(config.conf, "mumu12IPC", True),
             patch("arknights_mower.utils.device.device.MuMu12IPC") as ipc,
-            patch.object(ADBClient, "run", return_value=focus) as run,
+            patch.object(device, "recover") as recover,
         ):
-            ipc.return_value._ensure_ready.side_effect = RuntimeError("no display")
-            with self.assertRaises(DeviceRecoveryError):
-                disconnected_device().reconnect(restarts=0)
-        self.assertEqual(ipc.return_value._ensure_ready.call_count, 3)
-        self.assertEqual(run.call_count, 3)
-        self.assertEqual(ipc.return_value.close.call_count, 3)
+            device.control = Device.Control(device)
+            ipc.return_value.tap.side_effect = RuntimeError("IPC input failure")
+            ipc.return_value.swipe.side_effect = RuntimeError("IPC input failure")
+            operations = (
+                lambda: device.tap((1, 2)),
+                lambda: device.swipe((1, 2), (3, 4)),
+                lambda: device.swipe_ext([(1, 2), (3, 4)], [100]),
+            )
+            for operation in operations:
+                with self.assertRaisesRegex(RuntimeError, "IPC input failure"):
+                    operation()
+            recover.assert_not_called()
+            ipc.return_value.tap.assert_called_once_with(1, 2)
+            self.assertEqual(ipc.return_value.swipe.call_count, 2)
         self.restart.assert_not_called()
-
-
-class TestIpcFailurePropagation(unittest.TestCase):
-    def setUp(self):
-        self.ipc = object.__new__(MuMu12IPC)
-        self.ipc._conn = 7
-        self.ipc._display_id = 0
-        self.ipc._dll = MagicMock()
-        self.ipc._W = self.ipc._H = 1
-        self.ipc._BYTES = 4
-        self.ipc._buffer = None
-
-    def test_capture_failure_raises_instead_of_returning_black_success(self):
-        self.ipc._dll.nemu_capture_display.return_value = 1
-        with self.assertRaisesRegex(MuMuIpcError, "capture failed"):
-            self.ipc.capture_display()
-        self.ipc._dll.nemu_disconnect.assert_called_once_with(7)
-        self.assertEqual(self.ipc._conn, 0)
-        self.assertEqual(self.ipc._display_id, -1)
-
-    def test_input_failure_is_not_swallowed(self):
-        self.ipc._dll.nemu_input_event_key_down.return_value = 1
-        with self.assertRaisesRegex(MuMuIpcError, "key_down failed"):
-            self.ipc.key_down(3)
-        self.ipc._dll.nemu_disconnect.assert_called_once_with(7)
-
-    def test_display_readiness_failure_is_attempted_only_once(self):
-        self.ipc._display_id = -1
-        with patch.object(
-            self.ipc, "get_display_id", side_effect=RuntimeError("no display")
-        ) as display:
-            with self.assertRaisesRegex(RuntimeError, "no display"):
-                self.ipc.capture_display()
-        display.assert_called_once_with()
-        self.ipc._dll.nemu_capture_display.assert_not_called()
 
 
 if __name__ == "__main__":
