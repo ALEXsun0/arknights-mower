@@ -32,6 +32,7 @@ const progressUrl = computed(() => {
 })
 const packageFiles = ref([])
 const uploadPercent = ref(0)
+const uploading = ref(false)
 const source = computed(() => info.value?.deployment === 'source')
 const running = computed(() => busy.value || job.value.status === 'running')
 const blocked = computed(() => !info.value || info.value.blockers.length > 0)
@@ -198,12 +199,17 @@ async function install(manual = false, force = false, target = null) {
       const form = new FormData()
       form.append('file', packageFiles.value[0].file)
       form.append('background', String(background.value))
-      response = await axios.post(`${base}/manual`, form, {
-        headers,
-        onUploadProgress: (event) => {
-          if (event.total) uploadPercent.value = Math.round((event.loaded / event.total) * 100)
-        }
-      })
+      uploading.value = true
+      try {
+        response = await axios.post(`${base}/manual`, form, {
+          headers,
+          onUploadProgress: (event) => {
+            if (event.total) uploadPercent.value = Math.round((event.loaded / event.total) * 100)
+          }
+        })
+      } finally {
+        uploading.value = false
+      }
     } else {
       if (!target && !checked.value?.check_id) {
         await checkUpdate()
@@ -425,11 +431,7 @@ onUnmounted(() => {
               <div class="hint">Windows ZIP / Linux tar.gz / macOS DMG，保留原始文件名</div>
             </n-upload-dragger>
           </n-upload>
-          <n-progress
-            v-if="busy && packageFiles[0]?.file"
-            type="line"
-            :percentage="uploadPercent"
-          />
+          <n-progress v-if="uploading" type="line" :percentage="uploadPercent" processing />
           <n-popconfirm
             v-if="packageFiles[0]?.file"
             style="max-width: min(360px, calc(100vw - 32px))"
@@ -472,30 +474,46 @@ onUnmounted(() => {
         </n-collapse>
       </n-form-item>
       <n-form-item v-if="showProgress || disconnected" :show-label="false">
-        <n-alert
-          :type="
-            job.status === 'failed' ? 'error' : job.status === 'succeeded' ? 'success' : 'info'
-          "
-          title="更新状态"
-          aria-live="polite"
-        >
-          {{ job.message }}
-          <p v-if="disconnected">更新服务正在交接，稍后自动重试。</p>
-          <p v-if="job.current" class="version">
+        <div class="update-progress" aria-live="polite">
+          <n-progress
+            v-if="showProgress"
+            type="line"
+            :percentage="job.progress ?? 100"
+            :show-indicator="job.progress != null"
+            :processing="job.status === 'running' && !disconnected"
+            :status="
+              job.status === 'failed'
+                ? 'error'
+                : job.status === 'cancelled'
+                  ? 'warning'
+                  : job.status === 'succeeded'
+                    ? 'success'
+                    : 'default'
+            "
+          />
+          <p v-if="showProgress">{{ job.message }}</p>
+          <p v-if="showProgress && job.current">
             已下载 {{ (job.current / 1048576).toFixed(1) }} MiB<span v-if="job.total">
               / {{ (job.total / 1048576).toFixed(1) }} MiB</span
             >
           </p>
-          <p v-if="job.log_path" class="log-path">日志：{{ job.log_path }}</p>
-        </n-alert>
+          <p v-if="disconnected">更新服务正在交接，稍后自动重试。</p>
+        </div>
       </n-form-item>
       <n-form-item v-if="showProgress" :show-label="false">
         <n-space>
-          <n-button tag="a" :href="progressUrl" target="_blank" rel="noopener noreferrer">
+          <n-button
+            size="small"
+            tag="a"
+            :href="progressUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             独立更新进度
           </n-button>
           <n-button
             v-if="job.status === 'running'"
+            size="small"
             :disabled="!job.cancellable || cancelling"
             :loading="cancelling"
             @click="cancelUpdate"
@@ -503,10 +521,11 @@ onUnmounted(() => {
           >
         </n-space>
       </n-form-item>
-      <n-form-item v-if="showProgress && job.log" :show-label="false">
+      <n-form-item v-if="showProgress && (job.log || job.log_path)" :show-label="false">
         <n-collapse>
           <n-collapse-item title="安装日志" name="log">
-            <pre class="notes">{{ job.log }}</pre>
+            <p v-if="job.log_path" class="log-path">日志：{{ job.log_path }}</p>
+            <pre v-if="job.log" class="notes">{{ job.log }}</pre>
           </n-collapse-item>
         </n-collapse>
       </n-form-item>
@@ -515,6 +534,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.update-progress {
+  width: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
 .hint {
   margin-left: 8px;
   font-size: 12px;
