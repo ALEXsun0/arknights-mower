@@ -2,15 +2,48 @@
 
 name: 代码格式检查与测试
 on:
-  - push
-  - pull_request
+  push:
+    branches: [alpha, main]
+  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Determine test scope
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+      - uses: dorny/paths-filter@v3
+        id: filter
+        # Manual runs and PRs reaching the API's 3,000-file limit run every check.
+        if: >-
+          github.event_name != 'workflow_dispatch' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.changed_files < 3000)
+        with:
+          base: ${{ github.ref_name }}
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!*.md'
+              - '!{doc,plan,.github}/**/*.md'
+              - '!ui/README.md'
+              - '!{doc,img}/**/*.{png,jpg,jpeg,gif,webp,svg,avif}'
+
+  # Skip only an explicit docs-only result. If filtering fails, run the checks.
   ruff:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +58,8 @@ jobs:
         run: python -m ruff format --check .
 
   prettier:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +72,8 @@ jobs:
         run: npx --yes prettier@latest --check "ui/**/*.js" "ui/**/*.vue"
 
   actionlint:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +81,8 @@ jobs:
         uses: rhysd/actionlint@v1.7.12
 
   unittest:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +103,8 @@ jobs:
   # 运行依赖不含 scipy/scikit-image/scikit-learn，上面的 unittest 任务里等价性用例
   # 会整体跳过。这个任务装开发依赖把它们真正跑起来，避免识别算法被改坏时无人发现。
   recognition-equivalence:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +124,8 @@ jobs:
 
   update-compatibility:
     name: Update compatibility (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     strategy:
       fail-fast: false
       matrix:
