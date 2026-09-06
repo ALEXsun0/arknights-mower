@@ -17,14 +17,14 @@ DEFAULT_LAUNCH_COMMAND = (
 
 
 def default_maa_directory():
-    return str(get_path("@app/MAA", space=""))
+    return "@app/MAA"
 
 
 def default_adb_path():
     name = "adb.exe" if sys.platform == "win32" else "adb"
     bundled = get_path(f"@internal/platform-tools/{name}")
     if bundled.is_file() or sys.platform == "darwin":
-        return str(bundled)
+        return f"@internal/platform-tools/{name}"
     if sys.platform.startswith("linux"):
         return os.environ.get("MOWER_ADB_BIN") or shutil.which("adb") or ""
     return ""

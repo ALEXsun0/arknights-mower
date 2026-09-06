@@ -35,3 +35,9 @@ export function loadInstances(target = window, timeout = 15000) {
     ready()
   })
 }
+
+export async function initializeManager(renderInstances, target = window, timeout = 15000) {
+  const instances = await loadInstances(target, timeout)
+  await renderInstances(instances)
+  await target.pywebview.api.mark_ready()
+}

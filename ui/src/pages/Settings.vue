@@ -277,7 +277,8 @@ if (return_home_when_idle.value) {
                 <help-text>
                   <div>MuMu12：<code>模拟器路径\\shell\\adb.exe</code></div>
                   <div>
-                    macOS 和 Linux 安装包自带 ADB，新配置默认使用内置路径，也可以手动选择其他 ADB。
+                    macOS 和 Linux 安装包自带 ADB。默认的 @internal/platform-tools/adb
+                    随程序位置解析，也可以手动选择其他 ADB。
                   </div>
                 </help-text>
               </template>

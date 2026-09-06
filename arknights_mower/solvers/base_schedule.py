@@ -64,7 +64,7 @@ from arknights_mower.utils.operators import (
     Operator,
     Operators,
 )
-from arknights_mower.utils.path import get_path
+from arknights_mower.utils.path import get_path, resolve_config_path
 from arknights_mower.utils.plan import PlanTriggerTiming
 from arknights_mower.utils.recognize import RecognizeError, Recognizer, Scene
 from arknights_mower.utils.resource_pkg import refresh_resource_at_boundary
@@ -3785,7 +3785,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
     def initialize_maa(self):
         config.stop_maa.clear()
         conf = config.conf
-        path = pathlib.Path(conf.maa_path)
+        path = pathlib.Path(resolve_config_path(conf.maa_path))
         asst_path = os.path.dirname(path / "Python" / "asst")
         if asst_path not in sys.path:
             sys.path.append(asst_path)
@@ -3829,7 +3829,9 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             InstanceOptionType.touch_type, conf.maa_touch_option
         )
         if self.MAA.connect(
-            conf.maa_adb_path, self.device.client.device_id, conf.maa_conn_preset
+            resolve_config_path(conf.maa_adb_path),
+            self.device.client.device_id,
+            conf.maa_conn_preset,
         ):
             logger.info("MAA 连接成功")
         else:

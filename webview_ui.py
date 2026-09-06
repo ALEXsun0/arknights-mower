@@ -501,10 +501,36 @@ def run_desktop():
     registration.record["ready"] = True
     registration.publish()
     tray_queue = None
+    tray_retry_at = 0
+
+    def close_tray():
+        nonlocal tray_process, tray_queue
+        close_child(tray_process)
+        if tray_queue is not None:
+            tray_queue.close()
+        tray_process = None
+        tray_queue = None
+
+    def ensure_tray():
+        nonlocal tray_process, tray_queue, tray_retry_at
+        if tray_process is not None and tray_process.is_alive():
+            return
+        close_tray()
+        if monotonic() < tray_retry_at:
+            return
+        # A missing desktop backend must not cause a rapid restart loop.
+        tray_retry_at = monotonic() + 5
+        try:
+            tray_process, tray_queue = start_desktop_child(
+                "tray", instance_name or path.global_space, port, url
+            )
+        except OSError:
+            from arknights_mower.utils.log import logger
+
+            logger.exception("托盘启动失败，实例继续运行，稍后重试")
+
     if tray and not managed:
-        tray_process, tray_queue = start_desktop_child(
-            "tray", instance_name or path.global_space, port, url
-        )
+        ensure_tray()
 
     def open_window():
         close_child(config.webview_process)
@@ -573,26 +599,25 @@ def run_desktop():
                 if runtime.unified_managers():
                     manager_missing_since = None
                     if not managed:
-                        close_child(tray_process)
-                        if tray_queue is not None:
-                            tray_queue.close()
-                        tray_process = None
-                        tray_queue = None
+                        close_tray()
                         managed = True
                 elif manager_missing_since is None:
                     manager_missing_since = monotonic()
                 elif managed and monotonic() - manager_missing_since >= 5:
                     # A closed or crashed manager must not strand an instance.
                     managed = False
-                    tray_process, tray_queue = start_desktop_child(
-                        "tray", instance_name or path.global_space, port, url
-                    )
+            if tray and not managed:
+                ensure_tray()
             messages = registration.take_commands() if manager_owned else []
             if tray_queue is not None:
                 try:
                     messages.append(tray_queue.get(timeout=0.5))
                 except Empty:
                     pass
+                except (EOFError, OSError):
+                    # A tray crash is not a user's request to close the instance.
+                    close_tray()
+                    tray_retry_at = monotonic() + 5
             else:
                 sleep(0.5)
             for msg in messages:
@@ -610,12 +635,10 @@ def run_desktop():
     finally:
         config.stop_mower.set()
         close_child(config.webview_process, getattr(config, "parent_conn", None))
-        close_child(tray_process)
+        close_tray()
         if config.parent_conn is not None:
             config.parent_conn.close()
             config.parent_conn = None
-        if tray_queue is not None:
-            tray_queue.close()
         if log_listener is not None:
             log_listener.stop()
         if mp_log_queue is not None:

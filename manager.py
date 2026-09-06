@@ -54,7 +54,8 @@ def choose_instance_directory(window, directory=""):
 
 
 class Api:
-    def __init__(self, storage_path=None):
+    def __init__(self, storage_path=None, ready=None):
+        self._ready = ready
         self.storage_path = (
             Path(storage_path)
             if storage_path is not None
@@ -74,6 +75,10 @@ class Api:
 
     def get_instances(self):
         return self.instances
+
+    def mark_ready(self):
+        if self._ready is not None:
+            self._ready.set()
 
     def add(self, name, path):
         self.instances.append({"name": name, "path": path})
@@ -148,24 +153,13 @@ def manager_app():
     return app
 
 
-def wait_for_manager_ready(window, timeout=30):
-    """A live GUI process may still be stuck on the loading skeleton."""
-    from time import monotonic, sleep
-
-    deadline = monotonic() + timeout
-    while monotonic() < deadline:
-        if window.evaluate_js(
-            "document.querySelector('[data-manager-ready=\"true\"]') !== null"
-        ):
-            return True
-        sleep(0.1)
-    return False
-
-
 def manager_window(connection, ready, closed):
     from threading import Thread
 
-    api = Api()
+    from arknights_mower.utils.desktop_process import watch_parent
+
+    watch_parent()
+    api = Api(ready=ready)
     window = webview.create_window(
         title="多开管理器",
         url=manager_app(),
@@ -188,12 +182,6 @@ def manager_window(connection, ready, closed):
         except (EOFError, OSError):
             return
 
-    def manager_ready():
-        if not wait_for_manager_ready(window):
-            return
-        ready.set()
-
-    window.events.loaded += manager_ready
     window.events.closed += closed.set
     Thread(target=receive, daemon=True).start()
     webview.start(http_server=True)

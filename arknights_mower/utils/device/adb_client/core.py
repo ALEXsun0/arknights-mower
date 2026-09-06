@@ -12,6 +12,7 @@ from arknights_mower.utils.device.adb_client.session import Session
 from arknights_mower.utils.device.adb_client.socket import Socket
 from arknights_mower.utils.device.adb_client.utils import run_cmd
 from arknights_mower.utils.log import logger
+from arknights_mower.utils.path import resolve_config_path
 
 
 def query_mumu_adb_port(simulator) -> Optional[str]:
@@ -78,7 +79,7 @@ class Client:
     def __init_adb(self) -> None:
         if self.adb_bin is not None:
             return
-        adb_bin = config.conf.maa_adb_path
+        adb_bin = resolve_config_path(config.conf.maa_adb_path)
         logger.debug(f"try adb binary: {adb_bin}")
         if self.__check_adb(adb_bin):
             self.adb_bin = adb_bin

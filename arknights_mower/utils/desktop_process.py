@@ -7,7 +7,7 @@ channel without shared semaphores or a separate resource-tracking process.
 import os
 import subprocess
 import sys
-from multiprocessing import Pipe
+from multiprocessing import Pipe, parent_process
 from multiprocessing.connection import Connection
 from pathlib import Path
 from queue import Empty
@@ -103,6 +103,24 @@ def start_worker(kind, *args, log_queue=None):
     return worker, channel
 
 
+def watch_parent():
+    """Exit a GUI helper when its controller disappears, including SIGKILL."""
+    parent = parent_process()
+    parent_pid = os.getppid()
+
+    def alive():
+        if parent is not None:
+            return parent.is_alive()
+        return parent_pid != 1 and os.getppid() == parent_pid
+
+    def monitor():
+        while alive():
+            sleep(0.5)
+        os._exit(0)
+
+    Thread(target=monitor, daemon=True).start()
+
+
 def run_worker(target, descriptor, log_descriptor=None):
     channel = Channel(Connection(int(descriptor)))
     log_queue = (
@@ -110,14 +128,7 @@ def run_worker(target, descriptor, log_descriptor=None):
         if log_descriptor is not None
         else None
     )
-    parent_pid = os.getppid()
-
-    def watch_parent():
-        while os.getppid() == parent_pid and parent_pid != 1:
-            sleep(0.5)
-        os._exit(0)
-
-    Thread(target=watch_parent, daemon=True).start()
+    watch_parent()
     try:
         args = channel.recv()
         if log_queue is None:

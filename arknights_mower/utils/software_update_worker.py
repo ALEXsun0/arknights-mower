@@ -906,13 +906,6 @@ class Worker:
                 and not record.get("unified_tray")
             ):
                 continue
-            if record.get("managed") and not any(
-                r["kind"] == "manager"
-                and r.get("unified_tray")
-                and r.get("data_dir", "") == record.get("data_dir", "")
-                for r in records
-            ):
-                record = {**record, "managed": False}
             env = launch_environment(record, self.job["id"], self.job["background"])
             if self.job.get("tool_path"):
                 env["PATH"] = self.job["tool_path"]

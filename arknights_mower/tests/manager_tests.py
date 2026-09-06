@@ -18,7 +18,6 @@ from manager import (
     manager_app,
     manager_window,
     run_manager,
-    wait_for_manager_ready,
 )
 
 
@@ -138,20 +137,19 @@ class ManagerAppTests(unittest.TestCase):
                 self.request(app, "/assets/missing.js")[0].startswith("404")
             )
 
-    def test_readiness_waits_for_rendered_list(self):
-        window = mock.Mock()
-        window.evaluate_js.side_effect = [False, False, True]
-        with mock.patch("time.sleep"):
-            self.assertTrue(wait_for_manager_ready(window))
+    def test_successful_retry_can_mark_ready_after_initial_loading_failed(self):
+        from threading import Event
 
-    def test_live_window_with_loading_skeleton_is_not_ready(self):
-        window = mock.Mock()
-        window.evaluate_js.return_value = False
-        with (
-            mock.patch("time.monotonic", side_effect=[0, 1, 31]),
-            mock.patch("time.sleep"),
-        ):
-            self.assertFalse(wait_for_manager_ready(window))
+        ready = Event()
+        with tempfile.TemporaryDirectory() as directory:
+            api = Api(Path(directory) / "instances.json", ready=ready)
+            # Reading data alone does not claim that the page rendered it.
+            api.get_instances()
+            self.assertFalse(ready.is_set())
+            api.mark_ready()
+            self.assertTrue(ready.is_set())
+            api.mark_ready()
+            self.assertTrue(ready.is_set())
 
 
 class ManagerFolderDialogTests(unittest.TestCase):

@@ -1,5 +1,8 @@
 import logging
 import logging.handlers
+import os
+import select
+import signal
 import subprocess
 import sys
 import threading
@@ -35,6 +38,26 @@ def log_message(channel, message, log_queue=None):
     channel.send("logged")
     assert channel.recv() == "exit"
 run_worker(log_message, *sys.argv[1:])
+"""
+
+
+def watched_manager_helper(ready):
+    import time
+
+    desktop_process.watch_parent()
+    ready.send(os.getpid())
+    while True:
+        time.sleep(1)
+
+
+MANAGER_PARENT = """
+import multiprocessing as mp
+from arknights_mower.tests.desktop_process_tests import watched_manager_helper
+parent, child = mp.Pipe()
+helper = mp.get_context("spawn").Process(target=watched_manager_helper, args=(child,), daemon=True)
+helper.start()
+print(parent.recv(), flush=True)
+helper.join()
 """
 
 
@@ -110,6 +133,31 @@ class DesktopProcessTests(unittest.TestCase):
             queue.close()
         self.assertTrue(queue.connection.closed)
         self.assertTrue(queue.writer.closed)
+
+    def test_manager_helper_exits_when_its_parent_is_killed(self):
+        controller = subprocess.Popen(
+            [sys.executable, "-c", MANAGER_PARENT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        helper_pid = None
+        try:
+            self.assertTrue(select.select([controller.stdout], [], [], 10)[0])
+            helper_pid = int(controller.stdout.readline().strip())
+            controller.kill()
+            # The helper inherits stdout/stderr. EOF proves it exited too;
+            # daemon=True alone leaves these pipes open after the parent dies.
+            controller.communicate(timeout=8)
+        finally:
+            if helper_pid is not None:
+                try:
+                    os.kill(helper_pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            if controller.poll() is None:
+                controller.kill()
+            controller.communicate(timeout=5)
 
     def test_failed_launch_closes_both_pipe_descriptors(self):
         parent, child = desktop_process.Pipe()

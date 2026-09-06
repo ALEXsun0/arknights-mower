@@ -27,7 +27,11 @@ class TestMaaConfig(unittest.TestCase):
                         patch.object(path, "global_space", space),
                     ):
                         conf = Conf()
-                    self.assertEqual(conf.maa_path, str(Path(root) / "data/MAA"))
+                    self.assertEqual(conf.maa_path, "@app/MAA")
+                    self.assertEqual(
+                        path.resolve_config_path(conf.maa_path),
+                        str(Path(root) / "data/MAA"),
+                    )
                     self.assertEqual(
                         conf.maa_conn_preset,
                         "CompatMac" if platform == "darwin" else "General",
@@ -79,7 +83,13 @@ class TestMaaConfig(unittest.TestCase):
             for platform in ("darwin", "win32", "linux"):
                 with patch("sys.platform", platform):
                     name = "adb.exe" if platform == "win32" else "adb"
-                    self.assertEqual(Conf().maa_adb_path, str(tools_dir / name))
+                    self.assertEqual(
+                        Conf().maa_adb_path, f"@internal/platform-tools/{name}"
+                    )
+                    self.assertEqual(
+                        path.resolve_config_path(Conf().maa_adb_path),
+                        str(tools_dir / name),
+                    )
 
     def test_mirrorchyan_token_round_trip(self):
         conf = Conf(

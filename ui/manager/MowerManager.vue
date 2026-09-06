@@ -7,9 +7,9 @@ import PencilIcon from '@vicons/ionicons5/Pencil'
 import PlayIcon from '@vicons/ionicons5/Play'
 import TrashOutline from '@vicons/ionicons5/TrashOutline'
 
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 
-import { loadInstances } from './bridge.js'
+import { initializeManager } from './bridge.js'
 
 const loading = ref(true)
 const ready = ref(false)
@@ -26,8 +26,12 @@ async function initialize() {
   loading.value = true
   initializationError.value = ''
   try {
-    instances.value = await loadInstances()
-    ready.value = true
+    await initializeManager(async (loadedInstances) => {
+      instances.value = loadedInstances
+      ready.value = true
+      loading.value = false
+      await nextTick()
+    })
   } catch (error) {
     initializationError.value = error?.message || '无法加载实例列表，请重试'
   } finally {

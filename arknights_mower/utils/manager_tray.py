@@ -43,6 +43,9 @@ def manager_menu(commands):
 
 
 def start_manager_tray(commands, ready):
+    from arknights_mower.utils.desktop_process import watch_parent
+
+    watch_parent()
     from PIL import Image
     from pystray import Icon
 

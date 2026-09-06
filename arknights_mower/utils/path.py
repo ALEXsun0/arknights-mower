@@ -110,6 +110,18 @@ def get_path(path: str, space=None) -> Path:
         # raise ValueError("{} 路径必须以 '@xxx' 开头".format(path))
 
 
+def resolve_config_path(value: str) -> str:
+    """Resolve portable config aliases against this installation/data root.
+
+    Do not persist the resolved path or apply the instance space. Existing
+    absolute paths, relative paths and bare commands such as ``adb`` keep their
+    original meaning.
+    """
+    if value.split("/", 1)[0] in ("@app", "@internal", "@install"):
+        return str(get_path(value, space=""))
+    return value
+
+
 class SpecialDir:
     def __init__(self, method):
         self.method = method

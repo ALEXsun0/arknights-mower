@@ -30,7 +30,7 @@ from arknights_mower.utils.maa_check import (
     parse_maa_check_output,
 )
 from arknights_mower.utils.operators import Operators, build_global_plan
-from arknights_mower.utils.path import get_path
+from arknights_mower.utils.path import get_path, resolve_config_path
 from arknights_mower.utils.resource_pkg import register_resource_reload
 from arknights_mower.utils.resource_update_job import ResourceUpdateJob
 from arknights_mower.utils.update_runtime import active_job
@@ -1111,7 +1111,11 @@ def get_maa_update_info():
     configured_target = str(
         request.args.get("maa_path") or config.conf.maa_path or ""
     ).strip()
-    target = Path(configured_target).expanduser() if configured_target else None
+    target = (
+        Path(resolve_config_path(configured_target)).expanduser()
+        if configured_target
+        else None
+    )
     target_text = str(target) if target is not None else ""
     job = _maa_update_snapshot()
     installed_version = read_installed_version(target, fresh=True) if target else ""
@@ -1199,7 +1203,7 @@ def check_maa_update():
     target_text = str(payload.get("maa_path") or config.conf.maa_path or "").strip()
     if not target_text:
         return {"ok": False, "message": "请先设置 Maa 目录"}
-    target = str(Path(target_text).expanduser())
+    target = str(Path(resolve_config_path(target_text)).expanduser())
     if not has_maa_installation(target):
         return {"ok": False, "message": "当前目录未检测到 Maa，请使用下载功能"}
     if __system__ == "windows":
@@ -1292,7 +1296,7 @@ def start_maa_update():
         return {"ok": False, "message": str(e)}
     if not target:
         return {"ok": False, "message": "请先设置 Maa 目录"}
-    target = str(Path(target).expanduser())
+    target = str(Path(resolve_config_path(target)).expanduser())
     installed = has_maa_installation(target)
     operation = "更新" if installed else "下载"
     if __system__ == "windows" and installed:
@@ -1435,7 +1439,11 @@ def get_maa_resource_update_info():
     configured_target = str(
         request.args.get("maa_path") or config.conf.maa_path or ""
     ).strip()
-    target = Path(configured_target).expanduser() if configured_target else None
+    target = (
+        Path(resolve_config_path(configured_target)).expanduser()
+        if configured_target
+        else None
+    )
     target_text = str(target) if target else ""
     source = str(request.args.get("source") or "github").strip()
     cached_check = _cached_update_check(
@@ -1501,7 +1509,7 @@ def check_maa_resource_update():
     target_text = str(payload.get("maa_path") or config.conf.maa_path or "").strip()
     if not target_text:
         return {"ok": False, "message": "请先设置 Maa 目录"}
-    target = str(Path(target_text).expanduser())
+    target = str(Path(resolve_config_path(target_text)).expanduser())
     if not has_maa_installation(target):
         return {"ok": False, "message": "请先下载并设置有效的 Maa 目录"}
     source = str(payload.get("source") or "github").strip()
@@ -1567,7 +1575,7 @@ def start_maa_resource_update():
     ).strip()
     if not target:
         return {"ok": False, "message": "请先设置 Maa 目录"}
-    target = str(Path(target).expanduser())
+    target = str(Path(resolve_config_path(target)).expanduser())
     if not has_maa_installation(target):
         return {"ok": False, "message": "请先下载并设置有效的 Maa 目录"}
     if source not in {"github", "mirrorchyan"}:
@@ -1647,7 +1655,9 @@ def get_maa_resource_update_status():
 @app.route("/maa-conn-preset")
 @require_token
 def get_maa_conn_presets():
-    config_path = os.path.join(config.conf.maa_path, "resource", "config.json")
+    config_path = os.path.join(
+        resolve_config_path(config.conf.maa_path), "resource", "config.json"
+    )
     if not os.path.exists(config_path):
         logger.warning(f"MAA 配置文件不存在，返回空预设: {config_path}")
         return []

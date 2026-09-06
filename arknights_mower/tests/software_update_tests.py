@@ -552,7 +552,16 @@ class WorkerTests(unittest.TestCase):
 
         with patch.object(subprocess, "Popen") as process:
             self.worker().restart(records[1:], verify=False)
-        self.assertEqual(process.call_args.kwargs["env"]["MOWER_MANAGED"], "0")
+        self.assertEqual(process.call_args.kwargs["env"]["MOWER_MANAGED"], "1")
+        with (
+            patch.dict(os.environ, process.call_args.kwargs["env"]),
+            patch.object(runtime, "state_dir", return_value=self.state),
+        ):
+            restarted = runtime.RuntimeRegistration("instance", name="test")
+            try:
+                self.assertEqual(runtime.managed_instances(), [restarted.record])
+            finally:
+                restarted.close()
 
     def test_dependency_failure_restores_old_virtualenv_and_frontend(self):
         worker = self.worker()
@@ -590,13 +599,18 @@ class WorkerTests(unittest.TestCase):
         (self.root / "mower.exe").write_text("old executable")
         (self.root / "instances.json").write_text("my instances")
         (self.root / "config").mkdir()
-        (self.root / "config/conf.yml").write_text("my settings")
+        (self.root / "config/conf.yml").write_text("maa_path: '@app/MAA'")
+        (self.root / "MAA").mkdir()
+        (self.root / "MAA/user-data").write_text("keep MAA")
         (self.root / "resources/packages").mkdir(parents=True)
         (self.root / "resources/packages/persistent").write_text("shared resource")
         worker.install_package()
         self.assertFalse((self.root / "_internal/obsolete").exists())
         self.assertEqual((self.root / "mower.exe").read_text(), "new executable")
-        self.assertEqual((self.root / "config/conf.yml").read_text(), "my settings")
+        self.assertEqual(
+            (self.root / "config/conf.yml").read_text(), "maa_path: '@app/MAA'"
+        )
+        self.assertEqual((self.root / "MAA/user-data").read_text(), "keep MAA")
         self.assertEqual(
             (self.root / "resources/packages/persistent").read_text(), "shared resource"
         )
@@ -604,6 +618,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual((self.root / "_internal/obsolete").read_text(), "old")
         self.assertEqual((self.root / "mower.exe").read_text(), "old executable")
         self.assertEqual((self.root / "instances.json").read_text(), "my instances")
+        self.assertEqual((self.root / "MAA/user-data").read_text(), "keep MAA")
 
     def test_checksum_failure_happens_before_shutdown(self):
         self.job.update(
