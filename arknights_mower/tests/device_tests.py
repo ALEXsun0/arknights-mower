@@ -20,6 +20,9 @@ class TestIsAppRunningInBackground(unittest.TestCase):
     无法判定时按「运行中」处理，避免误判重新拉起游戏（Bug 2 的 pidof 假阴性根因）。
     """
 
+    def setUp(self):
+        self.enterContext(patch.object(Device, "recover", lambda self, func: func()))
+
     def test_ps_found_process_returns_true(self):
         device = _device()
         device.client.run.return_value = (
@@ -83,14 +86,20 @@ class TestCheckCurrentFocus(unittest.TestCase):
         self.device.bring_to_foreground = MagicMock()
         self.device.launch = MagicMock()
         self.device.start_droidcast = MagicMock()
-        self.restart_mock = patch(
-            "arknights_mower.utils.device.device.restart_simulator"
-        ).start()
-        self.addCleanup(self.restart_mock.stop)
+        self.restart_mock = self.enterContext(
+            patch(
+                "arknights_mower.utils.device.recovery.restart_simulator",
+                return_value=True,
+            )
+        )
+
+        self.reconnect_once = self.enterContext(
+            patch.object(self.device, "_connect_once")
+        )
+        self.enterContext(patch("arknights_mower.utils.device.recovery.csleep"))
 
     def _patchers(self) -> ExitStack:
         stack = ExitStack()
-        stack.enter_context(patch("arknights_mower.utils.device.device.Session"))
         stack.enter_context(patch("arknights_mower.utils.device.device.Scrcpy"))
         stack.enter_context(patch("arknights_mower.utils.device.device.csleep"))
         stack.enter_context(
@@ -131,7 +140,7 @@ class TestCheckCurrentFocus(unittest.TestCase):
             result = self.device.check_current_focus()
         self.assertTrue(result)
         self.assertEqual(self.device.current_focus.call_count, 2)
-        self.device.client.check_server_alive.assert_called_once_with()
+        self.reconnect_once.assert_called_once_with(wait_for_device=True)
         self.device.bring_to_foreground.assert_called_once_with()
 
     def test_confirmed_dead_auto_restarts_then_raises(self):
@@ -139,15 +148,15 @@ class TestCheckCurrentFocus(unittest.TestCase):
         with self._patchers():
             with self.assertRaisesRegex(ConnectionError, "重启模拟器"):
                 self.device.check_current_focus()
-        # retries=3 × restarts=3：9 次重试，判定设备无法连接自动重启 3 次后才放弃
-        self.assertEqual(self.device.current_focus.call_count, 9)
+        # 首次操作 + 初始恢复及三次重启后的每轮三次验证；最后一次重启也必须验证。
+        self.assertEqual(self.device.current_focus.call_count, 13)
         self.assertEqual(self.restart_mock.call_count, 3)
         self.device.launch.assert_not_called()
 
     def test_confirmed_dead_restarts_and_recovers(self):
         # 3 次瞬时失败判定设备无法连接 → 自动重启模拟器 → 重启后恢复
         self.device.current_focus = MagicMock(
-            side_effect=[ConnectionError(b"closed")] * 3 + [self.LAUNCHER_FOCUS]
+            side_effect=[ConnectionError(b"closed")] * 4 + [self.LAUNCHER_FOCUS]
         )
         with self._patchers():
             result = self.device.check_current_focus()
@@ -165,13 +174,42 @@ class TestCheckCurrentFocus(unittest.TestCase):
     def test_reconnect_failure_does_not_escape_recover(self):
         # recover 里 reconnect 抛错不再穿出：计入重试，最终仍走自动重启（修复点）
         self.device.current_focus = MagicMock(side_effect=ConnectionError(b"closed"))
-        self.device.reconnect = MagicMock(side_effect=RuntimeError("adb server 挂了"))
+        self.reconnect_once.side_effect = RuntimeError("adb server 挂了")
         with self._patchers():
             with self.assertRaisesRegex(ConnectionError, "重启模拟器"):
                 self.device.check_current_focus()
-        self.assertEqual(self.device.current_focus.call_count, 9)
+        self.assertEqual(self.device.current_focus.call_count, 1)
+        self.assertEqual(self.reconnect_once.call_count, 12)
         self.assertEqual(self.restart_mock.call_count, 3)
         self.device.launch.assert_not_called()
+
+    def test_runtime_retries_then_restarts_regardless_of_idle_option(self):
+        for close_when_idle in (False, True):
+            with (
+                self.subTest(close_when_idle=close_when_idle),
+                patch.object(config.conf, "close_simulator_when_idle", close_when_idle),
+            ):
+                operation = MagicMock(
+                    side_effect=[ConnectionError("offline"), "connected"]
+                )
+                self.reconnect_once.side_effect = [ConnectionError("offline")] * 3 + [
+                    None
+                ]
+                actions = MagicMock()
+                actions.attach_mock(operation, "operation")
+                actions.attach_mock(self.reconnect_once, "reconnect")
+                actions.attach_mock(self.restart_mock, "restart")
+                self.assertEqual(self.device.recover(operation), "connected")
+                self.assertEqual(
+                    actions.mock_calls,
+                    [call.operation()]
+                    + [call.reconnect(wait_for_device=True)] * 3
+                    + [
+                        call.restart(),
+                        call.reconnect(wait_for_device=True),
+                        call.operation(),
+                    ],
+                )
 
 
 class TestStartDroidcast(unittest.TestCase):
@@ -323,16 +361,16 @@ class TestStartDroidcast(unittest.TestCase):
         self.device.client.process.assert_not_called()
 
     def test_reconnect_failure_does_not_start_touch_service(self):
-        self.device.control = MagicMock()
+        self.device.control = None
         self.device.start_droidcast = MagicMock(return_value=False)
         with (
             patch.object(config.conf.droidcast, "enable", True),
             patch.object(config.conf, "touch_method", "scrcpy"),
-            patch("arknights_mower.utils.device.device.Session"),
+            patch.object(self.device, "check_resolution", return_value=True),
             patch("arknights_mower.utils.device.device.Scrcpy") as scrcpy,
         ):
             with self.assertRaisesRegex(ConnectionError, "DroidCast启动失败"):
-                self.device.reconnect()
+                self.device._connect_once()
         scrcpy.assert_not_called()
 
 

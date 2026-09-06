@@ -3,6 +3,7 @@ import functools
 import networkx as nx
 
 from arknights_mower.utils.csleep import MowerExit
+from arknights_mower.utils.device.recovery import DeviceRecoveryError
 from arknights_mower.utils.log import logger
 from arknights_mower.utils.scene import Scene, SceneComment
 from arknights_mower.utils.simulator import restart_simulator
@@ -457,7 +458,7 @@ class SceneGraphSolver(BaseSolver):
             try:
                 transition(self)
                 error_count = 0
-            except MowerExit:
+            except (MowerExit, DeviceRecoveryError):
                 raise
             except Exception as e:
                 logger.exception(f"场景转移异常：{e}")

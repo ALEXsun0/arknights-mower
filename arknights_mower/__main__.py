@@ -9,6 +9,7 @@ from arknights_mower.utils.csleep import MowerExit
 from arknights_mower.utils.csv_utils import EmptyDataError, read_csv_rows
 from arknights_mower.utils.datetime import get_server_time
 from arknights_mower.utils.depot import 创建csv, 创建json
+from arknights_mower.utils.device.recovery import DeviceRecoveryError
 from arknights_mower.utils.log import logger
 from arknights_mower.utils.news_checker import NewsChecker
 from arknights_mower.utils.operators import Operator
@@ -60,13 +61,16 @@ def _main(saved_state, restart_after_mood_read=False):
 
 
 def initialize(
-    tasks: list, scheduler: BaseSchedulerSolver | None = None
+    tasks: list,
+    scheduler: BaseSchedulerSolver | None = None,
+    *,
+    connection_retries: int = 3,
 ) -> BaseSchedulerSolver:
     if scheduler:
         scheduler.handle_error(True)
         return scheduler
 
-    base_scheduler = BaseSchedulerSolver()
+    base_scheduler = BaseSchedulerSolver(connection_retries=connection_retries)
     from arknights_mower.utils.operators import build_global_plan
 
     plan = build_global_plan()
@@ -104,26 +108,42 @@ def simulate(saved, restart_after_mood_read=False):
     tasks = saved["tasks"] if saved else []
     reconnect_max_tries = 10
     reconnect_tries = 0
+    connection_retries = 1
     global base_scheduler
+    if config.stop_mower.is_set():
+        return
+    if config.conf.close_simulator_when_idle:
+        connection_retries = 3
+        logger.info("已启用任务结束后关闭模拟器，任务开始前直接启动模拟器")
+        try:
+            if not restart_simulator(stop=False, start=True):
+                raise ConnectionError("任务开始前启动模拟器失败")
+        except MowerExit:
+            return
     success = False
     while not success:
         try:
-            base_scheduler = initialize([])
+            if config.stop_mower.is_set():
+                raise MowerExit
+            base_scheduler = initialize([], connection_retries=connection_retries)
             base_scheduler.restart_after_mood_read = restart_after_mood_read
             success = True
         except MowerExit:
             return
+        except DeviceRecoveryError:
+            raise
         except Exception as e:
             logger.exception(e)
-            if not config.conf.close_simulator_when_idle:
-                raise
+            if config.stop_mower.is_set():
+                return
             reconnect_tries += 1
             if reconnect_tries < 3:
-                restart_simulator()
-                # 首次 initialize 失败时模块全局 base_scheduler 仍是 None（initialize 内是局部变量），
-                # 不能拿它重连；下一次 initialize 会新建 Device 自然重连
-                if base_scheduler is not None:
-                    base_scheduler.device.reconnect()
+                logger.warning("初始化失败，尝试重启模拟器后重新连接")
+                if not restart_simulator():
+                    raise ConnectionError("首次初始化重启模拟器失败") from e
+                # 首次快速失败只生效一次，恢复后的初始化均先重试三次连接。
+                connection_retries = 3
+                # 下一次 initialize 会新建 Device，不重连上次运行残留的 scheduler。
                 continue
             else:
                 raise e
@@ -313,6 +333,8 @@ def simulate(saved, restart_after_mood_read=False):
             reconnect_tries = 0
         except MowerExit:
             return
+        except DeviceRecoveryError:
+            raise
         except (ConnectionError, ConnectionAbortedError, AttributeError) as e:
             logger.exception(e)
             reconnect_tries += 1
@@ -325,20 +347,18 @@ def simulate(saved, restart_after_mood_read=False):
                     try:
                         base_scheduler = initialize([], base_scheduler)
                         break
-                    except MowerExit:
+                    except (MowerExit, DeviceRecoveryError):
                         raise
                     except Exception as e:
                         if retry >= reconnect_max_tries:
                             raise
                         logger.exception(e)
-                        restart_simulator()
                         base_scheduler.device.reconnect()
                 continue
             else:
                 raise e
         except RuntimeError as e:
-            logger.exception(f"程序出错-尝试重启模拟器->{e}")
-            restart_simulator()
+            logger.exception(f"程序出错-尝试恢复设备连接->{e}")
             base_scheduler.device.reconnect()
         except Exception as e:
             logger.exception(f"程序出错--->{e}")

@@ -113,8 +113,14 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
     收集基建的产物：物资、赤金、信赖
     """
 
-    def __init__(self, device: Device = None, recog: Recognizer = None) -> None:
-        super().__init__(device, recog)
+    def __init__(
+        self,
+        device: Device = None,
+        recog: Recognizer = None,
+        *,
+        connection_retries: int = 3,
+    ) -> None:
+        super().__init__(device, recog, connection_retries=connection_retries)
         self.op_data = None
         self.party_time = None
         self.drone_time = None
@@ -4815,8 +4821,9 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 logger.info("休眠结束，启动自动关闭的模拟器")
                 if not restart_simulator(stop=False, start=True):
                     raise ConnectionError("休眠结束后模拟器启动失败")
-                self.device.reconnect()
+                # 启动成功即结束本轮的主动启动，后续连接故障交由正常重连恢复。
                 self._simulator_closed_for_idle = False
+                self.device.reconnect()
             self.recog.update()
         finally:
             self.sleeping = False
