@@ -84,7 +84,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
-      MOWER_DATA_DIR: ${{ runner.temp }}/mower-update-tests
+      MOWER_DATA_DIR: ${{ github.workspace }}/.cache/update-tests
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
