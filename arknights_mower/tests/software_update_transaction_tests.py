@@ -36,7 +36,7 @@ class SourceTransactionTests(unittest.TestCase):
         unchanged=False,
         fail_install=False,
     ):
-        with tempfile.TemporaryDirectory(prefix="mower-transaction-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="mower-transaction-中文 ") as temporary:
             directory = Path(temporary)
             root, state = directory / "install", directory / "state"
             root.mkdir()

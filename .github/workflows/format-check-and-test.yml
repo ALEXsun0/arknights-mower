@@ -74,3 +74,52 @@ jobs:
         run: ./venv/bin/python3 -c "import scipy, skimage, sklearn"
       - name: Compare vision_np against upstream implementations
         run: ./venv/bin/python3 -m unittest arknights_mower.tests.vision_np_tests -v
+
+  update-compatibility:
+    name: Update compatibility (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      MOWER_DATA_DIR: ${{ runner.temp }}/mower-update-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libzbar0 libgl1 libglib2.0-0
+      - name: Install macOS system library
+        if: runner.os == 'macOS'
+        run: brew install zbar
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Require transaction tools
+        shell: bash
+        run: |
+          python -c "import os; from pathlib import Path; Path(os.environ['MOWER_DATA_DIR']).mkdir(parents=True, exist_ok=True)"
+          python -c "import shutil; missing = [name for name in ('git', 'node', 'npm', 'uv') if not shutil.which(name)]; assert not missing, f'Missing required tools: {missing}'"
+          git --version
+          node --version
+          npm --version
+          uv --version
+      - name: Run native update and resource regressions
+        shell: bash
+        run: |
+          python -m unittest -v \
+            arknights_mower.tests.update_runtime_tests \
+            arknights_mower.tests.update_compat_tests \
+            arknights_mower.tests.res_version_tests \
+            arknights_mower.tests.resource_version_tests \
+            arknights_mower.tests.resource_pkg_tests \
+            arknights_mower.tests.software_update_progress_tests \
+            arknights_mower.tests.process_control_tests \
+            arknights_mower.tests.software_update_transaction_tests

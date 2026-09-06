@@ -61,9 +61,9 @@ def package_file_paths(root) -> list:
 def content_hash(root, rels) -> str:
     """对相对路径文件集算聚合 sha256（含路径，结果与顺序无关）。
 
-    Windows 检出（core.autocrlf）会把文本文件的 LF 转成 CRLF。文本文件按
-    git 自身判断文本的启发式（无 NUL 字节）归一化到 LF，使摘要在任何检出下
-    与打包内容一致；二进制文件按原字节参与。分块读取避免一次载入整文件。
+    Windows 检出（core.autocrlf）会把文本文件的 LF 转成 CRLF。仅对
+    RES_PACKAGE_DATA 声明的文本资源归一化到 LF；模型、图片及其他文件均按
+    原字节参与，不通过 NUL 字节猜测文件类型。分块读取避免一次载入整文件。
     """
     root = Path(root)
     digest = hashlib.sha256()
@@ -71,18 +71,9 @@ def content_hash(root, rels) -> str:
         digest.update(rel.as_posix().encode("utf-8"))
         digest.update(b"\0")
         with open(root / rel, "rb") as f:
-            normalize = not _contains_nul(f)
-            f.seek(0)
+            normalize = rel.as_posix() in RES_PACKAGE_DATA
             _update_digest(digest, f, normalize)
     return digest.hexdigest()
-
-
-def _contains_nul(stream) -> bool:
-    """Whether the stream contains a NUL byte, matching git's text heuristic."""
-    while chunk := stream.read(1 << 20):
-        if b"\0" in chunk:
-            return True
-    return False
 
 
 def _update_digest(digest, stream, normalize: bool) -> None:

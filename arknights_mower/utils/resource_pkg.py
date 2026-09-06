@@ -11,7 +11,6 @@ from io import BytesIO
 from pathlib import Path
 from shutil import copytree, rmtree
 from threading import RLock, get_ident
-from uuid import uuid4
 from zipfile import ZipFile
 
 import requests
@@ -39,6 +38,7 @@ from arknights_mower.utils.resource_store import (
     select_resource,
     validate_package,
 )
+from arknights_mower.utils.update_runtime import write_json
 from arknights_mower.utils.zip_safe import is_unsafe_zip_member
 
 RESOURCE_OVERLAY = get_path("@app/resources", space="")
@@ -119,13 +119,7 @@ def _remember_loaded_resource():
 
 
 def _write_index(packages):
-    RESOURCE_OVERLAY.mkdir(parents=True, exist_ok=True)
-    temporary = RESOURCE_OVERLAY / f".index-{uuid4().hex}.json"
-    try:
-        temporary.write_text(json.dumps({"packages": packages}), encoding="utf-8")
-        os.replace(temporary, RESOURCE_OVERLAY / "index.json")
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_json(RESOURCE_OVERLAY / "index.json", {"packages": packages})
 
 
 def _selection():

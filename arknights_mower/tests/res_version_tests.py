@@ -126,6 +126,31 @@ class TestContentHash(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             content_hash(self.dir, [Path("nope.bin")])
 
+    def test_declared_text_normalizes_crlf_across_chunk_boundary(self):
+        rel = Path(RES_PACKAGE_DATA[0])
+        path = self.dir / rel
+        path.parent.mkdir(parents=True)
+        crlf = b"x" * ((1 << 20) - 1) + b"\r\nnext\r\nlast\r"
+        path.write_bytes(crlf)
+        windows_hash = content_hash(self.dir, [rel])
+        path.write_bytes(crlf.replace(b"\r\n", b"\n"))
+        self.assertEqual(windows_hash, content_hash(self.dir, [rel]))
+
+    def test_binary_without_nul_and_undeclared_text_keep_exact_bytes(self):
+        for name in (
+            RES_PACKAGE_MODELS[0],
+            "ui/public/avatar/test.webp",
+            "unknown.json",
+        ):
+            with self.subTest(name=name):
+                rel = Path(name)
+                path = self.dir / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"\x01\r\n\x02")
+                original = content_hash(self.dir, [rel])
+                path.write_bytes(b"\x01\n\x02")
+                self.assertNotEqual(original, content_hash(self.dir, [rel]))
+
 
 class TestPackageFilePaths(unittest.TestCase):
     def setUp(self):
