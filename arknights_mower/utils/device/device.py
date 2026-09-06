@@ -4,6 +4,7 @@ import atexit
 import gzip
 import subprocess
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -15,14 +16,16 @@ from arknights_mower.utils import config
 from arknights_mower.utils.config.conf import DEFAULT_LAUNCH_COMMAND
 from arknights_mower.utils.csleep import MowerExit, csleep
 from arknights_mower.utils.device.adb_client.core import Client as ADBClient
-from arknights_mower.utils.device.adb_client.session import Session
 from arknights_mower.utils.device.maatouch import MaaTouch
 from arknights_mower.utils.device.mumu12ipc.core import MuMu12IPC
+from arknights_mower.utils.device.recovery import (
+    DeviceRecoveryError,
+    recover_connection,
+)
 from arknights_mower.utils.device.scrcpy import Scrcpy
 from arknights_mower.utils.image import bytes2img, img2bytes
 from arknights_mower.utils.log import logger, save_screenshot
 from arknights_mower.utils.network import get_new_port, is_port_in_use
-from arknights_mower.utils.simulator import restart_simulator
 
 
 class Device:
@@ -129,18 +132,85 @@ class Device:
         self.touch_device = touch_device
         self.client = None
         self.control = None
-        self.start(wait_for_device=wait_for_device)
+        self._recovery_active = False
+        self._recovery_error = None
+        try:
+            self.start(wait_for_device=wait_for_device)
+        except Exception:
+            self.close()
+            raise
         # 进程退出时释放 adb 资源，避免退出后 DroidCast/scrcpy 等常驻连接藕断丝连
         atexit.register(self.close)
 
-    def start(self, *, wait_for_device: bool = True) -> None:
-        self.client = ADBClient(
-            self.device_id, self.connect, wait_for_device=wait_for_device
+    @classmethod
+    def create(cls, *, connection_retries: int = 3) -> Device:
+        """首次连接策略和后续三次重连共用同一个恢复入口。"""
+        return recover_connection(
+            lambda *, wait_for_device: cls(wait_for_device=wait_for_device),
+            first_attempts=connection_retries,
+            wait_for_device=connection_retries > 1,
         )
-        self.control = Device.Control(self, self.client)
+
+    @contextmanager
+    def _recovery_scope(self):
+        if config.stop_mower.is_set():
+            raise MowerExit
+        # 某些业务层会捕获 Exception；同一设备恢复耗尽后不能被它们重新开启恢复。
+        if error := getattr(self, "_recovery_error", None):
+            raise error
+        previous = getattr(self, "_recovery_active", False)
+        self._recovery_active = True
+        try:
+            yield
+        except DeviceRecoveryError as e:
+            self._recovery_error = e
+            raise
+        finally:
+            self._recovery_active = previous
+
+    def _stop_control(self):
+        control = getattr(self, "control", None)
+        self.control = None
+        if control is None:
+            return
+        for service, close in ((control.scrcpy, "stop"), (control.mumu12IPC, "close")):
+            if service is not None:
+                try:
+                    getattr(service, close)()
+                except Exception:
+                    logger.debug("释放设备控制连接失败", exc_info=True)
+
+    def _connect_once(self, *, wait_for_device: bool = True) -> None:
+        """一次完整连接：先确认 ADB 在线，再初始化截图和触控，各执行一次。"""
+        with self._recovery_scope():
+            try:
+                self.close()
+                if self.client is None:
+                    self.client = ADBClient(
+                        self.device_id, self.connect, wait_for_device=wait_for_device
+                    )
+                else:
+                    self.client.reconnect(wait_for_device=wait_for_device)
+                self.device_id = self.client.device_id
+                if not self.check_resolution():
+                    raise MowerExit
+                if config.conf.droidcast.enable and not config.conf.mumu12IPC:
+                    if not self.start_droidcast():
+                        raise ConnectionError("DroidCast启动失败")
+                self.control = Device.Control(self, self.client)
+                if self.control.mumu12IPC is not None:
+                    # IPC 需要游戏显示窗口；保留原有拉起/切回游戏的行为，不嵌套恢复循环。
+                    self.check_current_focus()
+                    self.control.mumu12IPC._ensure_ready()
+            except Exception:
+                self.close()
+                raise
+
+    def start(self, *, wait_for_device: bool = True) -> None:
+        self._connect_once(wait_for_device=wait_for_device)
 
     def run(self, cmd: str) -> Optional[bytes]:
-        return self.client.run(cmd)
+        return self.recover(lambda: self.client.run(cmd))
 
     def launch(self) -> None:
         """launch the application"""
@@ -198,6 +268,8 @@ class Device:
             package = self.run(f"dumpsys package {config.conf.APPNAME}")
             if b"stopped=true" in package:
                 return False
+        except (MowerExit, DeviceRecoveryError):
+            raise
         except Exception as e:
             logger.debug(f"检查应用是否在后台运行时出错：{e}")
             return True
@@ -238,6 +310,8 @@ class Device:
             apk_path = f"{__rootdir__}/vendor/droidcast/DroidCast-debug-1.2.1.apk"
             try:
                 out = self.client.cmd(["install", apk_path], decode=True)
+            except (MowerExit, DeviceRecoveryError):
+                raise
             except Exception as e:
                 # 设备瞬时离线时 install 会失败：按「装不上」返回 False，不让重连崩
                 logger.warning(f"DroidCast安装失败：{e}")
@@ -260,6 +334,8 @@ class Device:
                 occupied_by_adb_forward = any(
                     line.split() == expected for line in forward_list
                 )
+            except (MowerExit, DeviceRecoveryError):
+                raise
             except Exception as e:
                 logger.exception(e)
             if not occupied_by_adb_forward:
@@ -302,23 +378,9 @@ class Device:
             time.sleep(delta)
             start_time = min_time
 
-        if self.control.mumu12IPC:
-            # 瞬时错误重建 IPC 重试；重试耗尽且设备无法连接时自动重启模拟器
-            for _ in range(3):
-                try:
-                    img = self.control.mumu12IPC.capture_display()
-                    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-                    break
-                except MowerExit:
-                    raise
-                except Exception as e:
-                    logger.exception(e)
-                    self.control.mumu12IPC = MuMu12IPC(self.device)
-            else:
-                restart_simulator()
-                self.control.mumu12IPC = MuMu12IPC(self.device)
-                img = self.control.mumu12IPC.capture_display()
-                gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        if config.conf.mumu12IPC:
+            img = self.recover(lambda: self.control.mumu12IPC.capture_display())
+            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         elif config.conf.droidcast.enable:
             session = config.droidcast.session
 
@@ -396,14 +458,14 @@ class Device:
     def tap(self, point: tuple[int, int]) -> None:
         """tap"""
         logger.debug(f"tap: {point}")
-        self.control.tap(point)
+        self.recover(lambda: self.control.tap(point))
 
     def swipe(
         self, start: tuple[int, int], end: tuple[int, int], duration: int = 100
     ) -> None:
         """swipe"""
         logger.debug(f"swipe: {start} -> {end}, duration={duration}")
-        self.control.swipe(start, end, duration)
+        self.recover(lambda: self.control.swipe(start, end, duration))
 
     def swipe_ext(
         self, points: list[tuple[int, int]], durations: list[int], up_wait: int = 200
@@ -412,7 +474,7 @@ class Device:
         logger.debug(
             f"swipe_ext: points={points}, durations={durations}, up_wait={up_wait}"
         )
-        self.control.swipe_ext(points, durations, up_wait)
+        self.recover(lambda: self.control.swipe_ext(points, durations, up_wait))
 
     def close(self) -> None:
         """释放 adb 相关资源（常驻子进程与 socket）。
@@ -428,53 +490,37 @@ class Device:
                 config.droidcast.process = None
         except Exception:
             logger.debug("终止 DroidCast 进程失败", exc_info=True)
-        try:
-            if self.control is not None and self.control.scrcpy is not None:
-                self.control.scrcpy.stop()
-        except Exception:
-            logger.debug("关闭 scrcpy 失败", exc_info=True)
+        self._stop_control()
 
-    def reconnect(self) -> None:
-        """重连 adb 会话 + 重初始化显示/触摸管线（不杀游戏、不重启模拟器）。
-
-        先重新发现目标模拟器当前 adb 端点（如 MuMu 双开端口漂移），避免一直连
-        config.conf.adb 里已失效的旧端口。"""
-        self.client.check_server_alive()
-        target = self.client.refresh_target()
-        self.device_id = target
-        Session().connect(target)
-        if config.conf.droidcast.enable:
-            if not self.start_droidcast():
-                raise ConnectionError("DroidCast启动失败")
-        if config.conf.touch_method == "scrcpy":
-            self.control.scrcpy = Scrcpy(self.client)
-
-    def _safe_reconnect(self) -> None:
-        """重连失败不抛给上层，计入 recover 的重试/重启语义。"""
-        try:
-            self.reconnect()
-        except Exception as e:
-            logger.warning(f"重连失败：{e}")
+    def reconnect(self, *, retries: int = 3, restarts: int = 2) -> None:
+        """恢复设备连接；每轮最多三次完整连接，耗尽后才重启模拟器。"""
+        if getattr(self, "_recovery_active", False):
+            return self._connect_once()
+        with self._recovery_scope():
+            return recover_connection(
+                self._connect_once, retries=retries, restarts=restarts
+            )
 
     def recover(self, func, retries: int = 3, restarts: int = 2):
-        """瞬时错误重连重试；重试耗尽且设备无法连接时自动重启模拟器；重启有上限。"""
-        last_exc = None
-        for _ in range(restarts):
-            for _ in range(retries):
-                try:
-                    return func()
-                except MowerExit:
-                    raise
-                except Exception as e:
-                    last_exc = e
-                    logger.warning(f"重试失败：{e}")
-                    self._safe_reconnect()
-            logger.warning(f"重试 {retries} 次仍失败，判定设备无法连接，自动重启模拟器")
-            restart_simulator()
-            self._safe_reconnect()
-        raise ConnectionError(
-            f"设备连不上，自动重启模拟器 {restarts} 次后仍失败"
-        ) from last_exc
+        """正常操作失败后进入统一恢复；嵌套设备操作不再扩增重试次数。"""
+        if getattr(self, "_recovery_active", False):
+            return func()
+        with self._recovery_scope():
+            try:
+                return func()
+            except (MowerExit, DeviceRecoveryError):
+                raise
+            except Exception as e:
+                logger.warning(f"设备操作失败，开始重连：{e}")
+
+            def retry_operation(*, wait_for_device):
+                self._connect_once(wait_for_device=wait_for_device)
+                # 连接失败不会继续访问设备；第三次重连成功也先验证操作再决定是否重启。
+                return func()
+
+            return recover_connection(
+                retry_operation, retries=retries, restarts=restarts
+            )
 
     def check_current_focus(self) -> bool:
         """检查游戏是否在前台；不在则切回/拉起；仅设备无法连接时才自动重启模拟器。"""

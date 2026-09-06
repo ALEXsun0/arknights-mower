@@ -2,7 +2,6 @@ import json
 import os
 import socket
 import subprocess
-import time
 from typing import Optional, Union
 
 from arknights_mower import __system__
@@ -185,47 +184,16 @@ class Client:
             creationflags=subprocess.CREATE_NO_WINDOW if __system__ == "windows" else 0,
         )
 
-    def _reconnect_device(self) -> None:
-        """断开并重连当前设备（走 adb server 5037）。
+    def reconnect(self, *, wait_for_device: bool = True) -> None:
+        """单次重连并确认目标上线；保留启动等待和 MuMu 端口重新发现。"""
+        self.__init_device(wait_for_device=wait_for_device)
 
-        设备未注册或离线时 disconnect/connect 会以非零码退出，属瞬态，不应打断重连
-        流程；此前直接用 check=True 抛 CalledProcessError，会在恢复循环里冒泡出来。
-        """
+    def check_server_alive(self) -> bool:
+        """单次检查 ADB server；连接恢复统一由 Device 管理。"""
         try:
-            self.__exec(f"disconnect {self.device_id}")
-        except (subprocess.CalledProcessError, OSError):
-            logger.debug(f"disconnect {self.device_id} 失败（设备可能未注册）")
-        try:
-            self.__exec(f"connect {self.device_id}")
-        except (subprocess.CalledProcessError, OSError):
-            logger.debug(f"connect {self.device_id} 失败")
-
-    def __run(self, cmd: str, restart: bool = True) -> Optional[bytes]:
-        """run command with Session"""
-        error_limit = 3
-        connect_retry = 2
-        while True:
-            try:
-                return Session().run(cmd)
-            except (socket.timeout, ConnectionError, RuntimeError):
-                if restart and error_limit > 0:
-                    error_limit -= 1
-                    if self.device_id and connect_retry > 0:
-                        connect_retry -= 1
-                        self.refresh_target()
-                        self._reconnect_device()
-                        time.sleep(0.5)
-                    else:
-                        # 只 start-server：未运行的 server 由 adb 客户端自动拉起；
-                        # 显式 kill-server 会中断本可恢复的 server 会话（放大瞬时故障）
-                        self.__exec("start-server")
-                        time.sleep(10)
-                    continue
-                return
-
-    def check_server_alive(self, restart: bool = True) -> bool:
-        """check adb server if it works"""
-        return self.__run("host:version", restart) is not None
+            return Session().run("host:version") is not None
+        except (socket.timeout, ConnectionError, RuntimeError):
+            return False
 
     def __check_adb(self, adb_bin: str) -> bool:
         """check adb_bin if it works
@@ -235,7 +203,7 @@ class Client:
         """
         try:
             self.__exec("start-server", adb_bin)
-            return self.check_server_alive(False)
+            return self.check_server_alive()
         except (FileNotFoundError, subprocess.CalledProcessError):
             return False
 
@@ -248,30 +216,7 @@ class Client:
     def run(self, cmd: str) -> Optional[bytes]:
         """run adb exec command"""
         logger.debug(f"command: {cmd}")
-        error_limit = 3
-        while True:
-            try:
-                resp = self.session().exec(cmd)
-                break
-            except (socket.timeout, ConnectionError, RuntimeError) as e:
-                # b'closed' 是 base ConnectionError（非 ConnectionRefusedError 子类），
-                # 漏掉会冒泡到 check_current_focus 的 restart_simulator，杀掉运行中的游戏
-                if error_limit > 0:
-                    error_limit -= 1
-                    # 只断开并重连当前设备，避免影响其他adb连接
-                    if self.device_id:
-                        self.refresh_target()
-                        self._reconnect_device()
-                        time.sleep(3)
-                        self.__init_device()
-                    else:
-                        # 只 start-server：未运行的 server 由 adb 客户端自动拉起；
-                        # 显式 kill-server 会中断本可恢复的 server 会话（放大瞬时故障）
-                        self.__exec("start-server")
-                        time.sleep(10)
-                        self.__init_device()
-                    continue
-                raise e
+        resp = self.session().exec(cmd)
         if len(resp) <= 256:
             logger.debug(f"response: {repr(resp)}")
         return resp

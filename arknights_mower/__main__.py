@@ -9,6 +9,7 @@ from arknights_mower.utils.csleep import MowerExit
 from arknights_mower.utils.csv_utils import EmptyDataError, read_csv_rows
 from arknights_mower.utils.datetime import get_server_time
 from arknights_mower.utils.depot import 创建csv, 创建json
+from arknights_mower.utils.device.recovery import DeviceRecoveryError
 from arknights_mower.utils.log import logger
 from arknights_mower.utils.news_checker import NewsChecker
 from arknights_mower.utils.operators import Operator
@@ -129,6 +130,8 @@ def simulate(saved, restart_after_mood_read=False):
             success = True
         except MowerExit:
             return
+        except DeviceRecoveryError:
+            raise
         except Exception as e:
             logger.exception(e)
             if config.stop_mower.is_set():
@@ -330,6 +333,8 @@ def simulate(saved, restart_after_mood_read=False):
             reconnect_tries = 0
         except MowerExit:
             return
+        except DeviceRecoveryError:
+            raise
         except (ConnectionError, ConnectionAbortedError, AttributeError) as e:
             logger.exception(e)
             reconnect_tries += 1
@@ -342,20 +347,18 @@ def simulate(saved, restart_after_mood_read=False):
                     try:
                         base_scheduler = initialize([], base_scheduler)
                         break
-                    except MowerExit:
+                    except (MowerExit, DeviceRecoveryError):
                         raise
                     except Exception as e:
                         if retry >= reconnect_max_tries:
                             raise
                         logger.exception(e)
-                        restart_simulator()
                         base_scheduler.device.reconnect()
                 continue
             else:
                 raise e
         except RuntimeError as e:
-            logger.exception(f"程序出错-尝试重启模拟器->{e}")
-            restart_simulator()
+            logger.exception(f"程序出错-尝试恢复设备连接->{e}")
             base_scheduler.device.reconnect()
         except Exception as e:
             logger.exception(f"程序出错--->{e}")

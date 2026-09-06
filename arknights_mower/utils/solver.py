@@ -13,9 +13,7 @@ from arknights_mower.utils import config
 from arknights_mower.utils import typealias as tp
 from arknights_mower.utils.csleep import MowerExit, csleep
 from arknights_mower.utils.device.adb_client.const import KeyCode
-from arknights_mower.utils.device.adb_client.session import Session
 from arknights_mower.utils.device.device import Device
-from arknights_mower.utils.device.scrcpy import Scrcpy
 from arknights_mower.utils.email import send_message
 from arknights_mower.utils.image import cropimg, thres2
 from arknights_mower.utils.log import logger
@@ -55,32 +53,7 @@ class BaseSolver:
         if device is not None:
             self.device = device
         else:
-            for _ in range(connection_retries):
-                if config.stop_mower.is_set():
-                    raise MowerExit
-                try:
-                    self.device = Device(wait_for_device=connection_retries > 1)
-                    self.device.client.check_server_alive()
-                    Session().connect(config.conf.adb)
-                    if not self.device.check_resolution():
-                        raise MowerExit
-                    if config.conf.droidcast.enable:
-                        if not self.device.start_droidcast():
-                            raise ConnectionError("DroidCast启动失败")
-                    if config.conf.touch_method == "scrcpy":
-                        self.device.control.scrcpy = Scrcpy(self.device.client)
-                    break
-                except MowerExit:
-                    raise
-                except Exception as e:
-                    last_exc = e
-                    logger.warning(f"设备连接失败：{e}")
-                    if config.stop_mower.is_set():
-                        raise MowerExit
-            else:
-                raise ConnectionError(
-                    f"设备连接 {connection_retries} 次失败，交由上层重启模拟器"
-                ) from last_exc
+            self.device = Device.create(connection_retries=connection_retries)
 
         self.recog = recog if recog is not None else Recognizer(self.device)
 
