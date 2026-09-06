@@ -1,6 +1,7 @@
 """Failure-path integration for update admission, restart and resource indexes."""
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -166,6 +167,24 @@ class UpdateCompatibilityTests(unittest.TestCase):
                 self.assertIn(
                     "🧪", (self.job_path.parent / filename).read_text(encoding="utf-8")
                 )
+
+    def test_real_worker_entry_reconfigures_redirected_legacy_stdout(self):
+        code = (
+            "import sys\n"
+            "from unittest.mock import patch\n"
+            "from arknights_mower.utils.software_update_worker import Worker, main\n"
+            "with patch.object(Worker, 'execute', side_effect=lambda: print('正在更新 🧪', flush=True)):\n"
+            "    main(sys.argv[1])\n"
+        )
+        for encoding in ("gbk", "cp1252"):
+            with self.subTest(encoding=encoding):
+                output = subprocess.check_output(
+                    [sys.executable, "-c", code, str(self.job_path)],
+                    env={**os.environ, "PYTHONUTF8": "0", "PYTHONIOENCODING": encoding},
+                    stderr=subprocess.STDOUT,
+                    timeout=30,
+                )
+                self.assertEqual(output.decode("utf-8").strip(), "正在更新 🧪")
 
     def test_resource_index_retries_windows_sharing_error_and_keeps_old_on_failure(
         self,

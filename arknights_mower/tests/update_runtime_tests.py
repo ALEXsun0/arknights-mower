@@ -105,9 +105,10 @@ class InstanceScanTests(unittest.TestCase):
         calls = []
 
         def read(path, *args, **kwargs):
-            calls.append(path)
-            if len(calls) == 1:
-                raise PermissionError("temporarily locked")
+            if path == self.path:
+                calls.append(path)
+                if len(calls) == 1:
+                    raise PermissionError("temporarily locked")
             return read_text(path, *args, **kwargs)
 
         with patch.object(Path, "read_text", read):

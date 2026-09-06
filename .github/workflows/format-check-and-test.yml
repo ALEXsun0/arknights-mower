@@ -113,6 +113,10 @@ jobs:
           uv --version
       - name: Run native update and resource regressions
         shell: bash
+        env:
+          # Unit tests also call Worker methods directly, outside its CLI entry.
+          # Legacy-encoding child tests explicitly override this value.
+          PYTHONIOENCODING: utf-8
         run: |
           python -m unittest -v \
             arknights_mower.tests.update_runtime_tests \
