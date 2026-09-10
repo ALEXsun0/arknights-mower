@@ -317,7 +317,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             required = 0
             for x in candidates:
                 op = self.op_data.operators[x]
-                if op.workaholic:
+                if op.workaholic or op.room.startswith("dorm"):
                     continue
                 required += 1
             remove_name = set()
@@ -353,6 +353,8 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     for name in self.op_data.groups[operator.group]:
                         if self.op_data.operators[name].is_resting():
                             _, dorm = self.op_data.get_dorm_by_name(name)
+                            if dorm is None:
+                                continue
                             # 跳过已经计算的休息完毕的人
                             if dorm.time is not None and dorm.time < datetime.now():
                                 continue
@@ -470,7 +472,8 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                         continue
                     # Lancet-2
                     if (
-                        self.op_data.operators[member].workaholic
+                        self.op_data.operators[member].room.startswith("dorm")
+                        or self.op_data.operators[member].workaholic
                         and member not in fia_plan
                     ):
                         continue
@@ -971,7 +974,12 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                         need_fix = True
                     fix_plan[key][idx] = plan[key][idx].agent
         # 最后如果有任何高效组心情没有记录 或者高效组在宿舍
-        miss_list = {k: v for (k, v) in self.op_data.operators.items() if v.not_valid()}
+        # 宿舍绑组成员由组状态纠错处理；下班期间离开固定位置是正常状态。
+        miss_list = {
+            k: v
+            for k, v in self.op_data.operators.items()
+            if v.not_valid() and not (v.group and v.room.startswith("dorm"))
+        }
         if len(miss_list.keys()) > 0:
             # 替换到他应该的位置
             logger.debug(f"高效组心情没有记录{str(miss_list)}")
@@ -984,6 +992,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                             k
                             for k, v in self.op_data.operators.items()
                             if v.group == _agent.group
+                            and not v.room.startswith("dorm")
                             and not v.not_valid()
                             and v.is_resting()
                         ),
@@ -1041,7 +1050,11 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     del fix_plan[item]
             # 还要确保同一组在同时上班
             for g in self.op_data.groups:
-                g_agents = self.op_data.groups[g]
+                g_agents = [
+                    name
+                    for name in self.op_data.groups[g]
+                    if not self.op_data.operators[name].room.startswith("dorm")
+                ]
                 is_any_working = next(
                     (
                         x
@@ -1084,32 +1097,36 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             )
 
             prefer_resting_replacements(self.op_data, fix_plan, _is_mastery_busy)
-            if len(fix_plan.keys()) > 0:
-                # 如果5分钟之内有任务则跳过心情读取
-                next_task = self.find_next_task()
-                next_shift_off = self.find_next_task(task_type=TaskTypes.SHIFT_OFF)
-                second = (
-                    0
-                    if next_task is None
-                    else (next_task.time - datetime.now()).total_seconds()
-                )
-                # 如果下个任务的操作时间超过下个任务，则跳过
-                if (
-                    not force
-                    and next_task is not None
-                    and len(fix_plan.keys()) * 45 > second
-                ) or next_shift_off is not None:
-                    logger.info("有未完成的任务，跳过纠错")
-                    self.skip()
-                    return
-                else:
-                    self.tasks.append(
-                        SchedulerTask(
-                            task_plan=fix_plan, task_type=TaskTypes.SELF_CORRECTION
-                        )
+        from arknights_mower.utils.resting_correction import correct_group_dorms
+
+        if self.op_data.has_dorm_groups():
+            correct_group_dorms(self.op_data, fix_plan, _is_mastery_busy)
+        if len(fix_plan.keys()) > 0:
+            # 如果5分钟之内有任务则跳过心情读取
+            next_task = self.find_next_task()
+            next_shift_off = self.find_next_task(task_type=TaskTypes.SHIFT_OFF)
+            second = (
+                0
+                if next_task is None
+                else (next_task.time - datetime.now()).total_seconds()
+            )
+            # 如果下个任务的操作时间超过下个任务，则跳过
+            if (
+                not force
+                and next_task is not None
+                and len(fix_plan.keys()) * 45 > second
+            ) or next_shift_off is not None:
+                logger.info("有未完成的任务，跳过纠错")
+                self.skip()
+                return
+            else:
+                self.tasks.append(
+                    SchedulerTask(
+                        task_plan=fix_plan, task_type=TaskTypes.SELF_CORRECTION
                     )
-                    logger.info(f"纠错任务为-->{fix_plan}")
-                    return "self_correction"
+                )
+                logger.info(f"纠错任务为-->{fix_plan}")
+                return "self_correction"
 
     def _train_mastery_active(self) -> bool:
         """训练室是否受专精管理：enable_mastery 开 + DB 有 active 计划 或 队列有专精任务。
@@ -1974,6 +1991,14 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
 
     def rearrange_resting_priority(self, group):
         operators = self.op_data.groups[group]
+        if any(
+            self.op_data.operators[name].room.startswith("dorm") for name in operators
+        ):
+            operators = [
+                name
+                for name in operators
+                if not self.op_data.operators[name].room.startswith("dorm")
+            ]
         # 肥鸭充能新模式：https://github.com/ArkMowers/arknights-mower/issues/551
         fia_plan, fia_room = self.check_fia()
         # 排序
@@ -2004,12 +2029,20 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             high_count -= 1
 
     def get_resting_plan(self, agents, exist_replacement, plan, current_resting):
+        # 宿舍成员只跟随换班，不以自身心情抢占组内替班或休息优先级。
+        dorm_agents = [
+            name
+            for name in agents
+            if self.op_data.operators[name].room.startswith("dorm")
+        ]
+        if dorm_agents:
+            agents = [name for name in agents if name not in dorm_agents]
         __replacement = []
         __plan = {}
         required = 0
         for x in agents:
             op = self.op_data.operators[x]
-            if op.workaholic:
+            if op.workaholic or op.room.startswith("dorm"):
                 continue
             required += 1
         logger.debug(f"需求:{current_resting} 当前休息")
@@ -2027,6 +2060,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 - self.op_data.operators[y].lower_limit,
             )
         )
+        agents.extend(dorm_agents)
         logger.debug(f"计算排班:{agents}")
         for agent in agents:
             if not success:
@@ -2043,7 +2077,7 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
             _rep = next(
                 (
                     obj
-                    for obj in x.replacement
+                    for obj in self.op_data.replacement_candidates(x)
                     if (
                         not (
                             self.op_data.operators[obj].current_room != ""
@@ -2054,7 +2088,11 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                     and not _is_mastery_busy(obj)
                     and obj not in exist_replacement
                     and obj not in __replacement
-                    and self.op_data.operators[obj].current_room != x.room
+                    and not self.op_data.is_dorm_replacement(obj)
+                    and (
+                        x.room.startswith("dorm")
+                        or self.op_data.operators[obj].current_room != x.room
+                    )
                 ),
                 None,
             )
@@ -2067,7 +2105,10 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 success = False
         if success:
             resting_agents = [
-                x for x in agents if not self.op_data.operators[x].workaholic
+                x
+                for x in agents
+                if not self.op_data.operators[x].workaholic
+                and not self.op_data.operators[x].room.startswith("dorm")
             ]
             # 床位判断和分配使用同一套规则。先为整组模拟预留，避免低优占床
             # 提前挡住大组，也避免分到一半才失败留下脏状态。
@@ -3103,8 +3144,12 @@ class BaseSchedulerSolver(SceneGraphSolver, BaseMixin):
                 agents[idx] = "Free"
             if room.startswith("dorm") and agents[idx] in self.op_data.operators.keys():
                 __agent = self.op_data.operators[agents[idx]]
-                if __agent.mood == __agent.upper_limit and not __agent.room.startswith(
-                    "dorm"
+                if (
+                    __agent.mood == __agent.upper_limit
+                    and not __agent.room.startswith("dorm")
+                    and not self.op_data.is_dorm_replacement_for_slot(
+                        __agent.name, room, idx
+                    )
                 ):
                     agents[idx] = "Free"
                     __agent.depletion_rate = 0
