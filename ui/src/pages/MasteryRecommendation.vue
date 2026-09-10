@@ -117,6 +117,7 @@
           <MasteryMaterials
             v-else
             :summary="planMaterials"
+            :missing-skills="missingPlanSkills"
             expand-crafting
             title="计划剩余总材料消耗"
           />
@@ -167,7 +168,7 @@
                   </n-space>
                   <n-space :size="4">
                     <n-tag
-                      :type="rec.material_summary?.craftable ? 'success' : 'warning'"
+                      :type="rec.material_summary?.craftable ? 'success' : 'error'"
                       size="small"
                     >
                       {{ materialStatus(rec.material_summary) }}
@@ -415,17 +416,6 @@
           </template>
         </draggable>
         <n-text v-if="!planEntries.length" depth="3">未添加计划</n-text>
-        <n-card v-if="planEntries.length" size="small">
-          <n-spin :show="materialsLoading">
-            <n-alert v-if="materialsError" type="warning">{{ materialsError }}</n-alert>
-            <MasteryMaterials
-              v-else
-              :summary="planMaterials"
-              expand-crafting
-              title="计划剩余总材料消耗"
-            />
-          </n-spin>
-        </n-card>
         <n-divider />
         <n-scrollbar style="max-height: 50vh">
           <div v-for="op in filteredPlanOperators" :key="op.char_id" class="plan-op-row">
@@ -825,7 +815,7 @@ async function warnMaterialShortage(additions) {
       message.warning(
         summary.craftable
           ? '计划总需求超出成品库存，可由现有材料合成；仍可加入计划。'
-          : '计划总材料不足（含技巧概要），缺口可在专精计划中查看；仍可加入计划。'
+          : '计划总材料不足（含技巧概要），缺口可在主页查看；仍可加入计划。'
       )
     }
   } catch {
@@ -1469,6 +1459,10 @@ function visibleRecs(op) {
 }
 
 const planMaterials = ref(null)
+const missingPlanSkills = computed(() => {
+  const keys = new Set(planMaterials.value?.missing_skills || [])
+  return planEntries.value.filter((entry) => keys.has(entry.key))
+})
 const materialsLoading = ref(false)
 const materialsError = ref('')
 let materialRequest = 0
@@ -1476,7 +1470,7 @@ let materialTimer
 
 async function refreshT3Summary() {
   const request = ++materialRequest
-  const keys = Object.keys(plan.value).filter((key) => plan.value[key])
+  const keys = planEntries.value.map((entry) => entry.key)
   if (!keys.length) {
     planMaterials.value = null
     materialsLoading.value = false
