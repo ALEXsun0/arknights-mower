@@ -80,11 +80,11 @@ def _score(region, template):
     )
 
 
-def _score_gamma_spacing(region, template):
-    """Match both sides of ·γ型 when game spacing differs from the font template.
+def _score_greek_suffix_spacing(region, template):
+    """Match both sides of ·β型/·γ型 when game spacing differs from the font.
 
-    The bundled font has the correct glyphs, but the game draws the dot and
-    gamma closer to the preceding Chinese text. Keep both parts on the same
+    The bundled font has the correct glyphs, but the game can draw the dot and
+    Greek letter closer to the preceding Chinese text. Keep both parts on the same
     baseline and in order; their weaker score is the candidate's score.
     """
     ink = (template != 0).any(axis=0)
@@ -120,8 +120,8 @@ def _score_gamma_spacing(region, template):
 
 def _skill_score(region, name, template):
     score = _score(region, template)
-    if score < SKILL_MIN_SCORE and name.endswith("·γ型"):
-        score = max(score, _score_gamma_spacing(region, template))
+    if score < SKILL_MIN_SCORE and name.endswith(("·β型", "·γ型")):
+        score = max(score, _score_greek_suffix_spacing(region, template))
     return score
 
 

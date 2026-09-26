@@ -109,6 +109,35 @@ def test_gamma_spacing_fallback_does_not_match_other_skill():
     assert match is not None and match[:2] == (1, "聆听")
 
 
+def test_beta_spacing_fallback_matches_compact_game_text():
+    data = json.loads(DATA.read_text(encoding="utf-8"))
+    font = ImageFont.truetype(
+        str(ROOT / "fonts/SourceHanSansCN-Medium-mastery.ttf"), FONT_SIZE
+    )
+    rendered = render_template("[桃金娘]支援号令·β型", font)
+    ink = np.any(rendered != 0, axis=0)
+    starts = np.flatnonzero(np.diff(np.pad(ink.astype(int), (1, 1))) == 1)
+    ends = np.flatnonzero(np.diff(np.pad(ink.astype(int), (1, 1))) == -1)
+    gaps = [
+        (ends[i], starts[i + 1])
+        for i in range(len(starts) - 1)
+        if starts[i + 1] - ends[i] >= 12
+    ]
+    before_dot, before_beta = gaps[-2:]
+    compact = np.hstack(
+        (
+            rendered[:, : before_dot[1] - 7],
+            rendered[:, before_dot[1] : before_beta[1] - 9],
+            rendered[:, before_beta[1] :],
+        )
+    )
+    image = np.zeros((42, 520), dtype=np.uint8)
+    image[4 : 4 + compact.shape[0], 5 : 5 + compact.shape[1]] = compact
+
+    match = recognize_skill(image, "桃金娘", data)
+    assert match is not None and match[:2] == (0, "支援号令·β型")
+
+
 def test_amiya_forms_are_collected_and_recognized():
     data = json.loads(DATA.read_text(encoding="utf-8"))
     expected = {
