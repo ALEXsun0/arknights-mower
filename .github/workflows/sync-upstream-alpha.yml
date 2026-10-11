@@ -1,0 +1,45 @@
+name: Sync alpha from upstream
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-alpha
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'ALEXsun0/arknights-mower'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fast-forward alpha to upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_sha=$(gh api repos/ArkMowers/arknights-mower/git/ref/heads/alpha --jq '.object.sha')
+          fork_sha=$(gh api "repos/${FORK_REPOSITORY}/git/ref/heads/alpha" --jq '.object.sha')
+
+          if [[ "$fork_sha" == "$upstream_sha" ]]; then
+            echo 'alpha is already up to date.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          comparison=$(gh api "repos/${FORK_REPOSITORY}/compare/${fork_sha}...${upstream_sha}" --jq '.status')
+          if [[ "$comparison" != 'ahead' ]]; then
+            echo '::error::alpha has commits outside upstream. Synchronization stopped; no commits were overwritten.'
+            echo 'Synchronization stopped because alpha has commits outside upstream. Resolve the divergence manually.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          gh api --method PATCH "repos/${FORK_REPOSITORY}/git/refs/heads/alpha" \
+            -f sha="$upstream_sha" -F force=false --silent
+          printf 'alpha synchronized to upstream commit `%s`.\n' "$upstream_sha" >> "$GITHUB_STEP_SUMMARY"
